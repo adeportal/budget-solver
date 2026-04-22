@@ -1,0 +1,72 @@
+Loading data from: tests/fixtures/synthetic_10weeks.csv
+Loaded 60 rows across 6 accounts.
+
+Training window: last 6 months (2023-09-04 to 2024-03-04)
+
+Outlier removal: no anomalies detected.
+
+Demand index built (derived from data). Sample multipliers:
+  Week  1  1.171  ███████████
+  Week  7  0.950  █████████
+  Week 14  0.997  █████████
+  Week 17  0.997  █████████
+  Week 26  0.997  █████████
+  Week 32  0.997  █████████
+  Week 40  0.997  █████████
+  Week 44  0.997  █████████
+  Week 50  0.997  █████████
+
+Forecast period: Apr 2024 (inferred from latest data date 2024-03-04)
+Forecast week: 16  demand multiplier: 0.997
+
+Fitting response curves:
+  Landal BE                       model=log              R²=0.761  n=10
+  Landal DE                       model=log              R²=0.503  n=10
+  Landal NL                       model=log              R²=0.256  n=10
+  Roompot BE                      model=log              R²=0.785  n=10
+  Roompot DE                      model=log              R²=0.571  n=10
+  Roompot NL                      model=log              R²=0.250  n=10
+
+── CURRENT PERFORMANCE (2024-02-04 to 2024-03-04) ──────────────────────────────
+  Account                                    Spend   ROAS (raw)  ROAS (lag-adj)  cal.factor
+  ──────────────────────────────────────────────────────────────────────────────────────────
+  Landal BE                           €    35,305        4.81x           4.81x     0.843x
+  Landal DE                           €    38,374        3.85x           3.85x     0.959x
+  Landal NL                           €    43,245        5.88x           5.88x     0.932x
+  Roompot BE                          €    37,239        2.83x           2.83x     0.862x
+  Roompot DE                          €    65,990        4.16x           4.16x     0.924x
+  Roompot NL                          €    32,285        5.45x           5.45x     0.973x
+  ──────────────────────────────────────────────────────────────────────────────────────────
+  TOTAL                               €   252,438        4.47x           4.47x
+
+Optimizing budget: €500,000
+Auto spend caps applied (2x historical monthly max per account):
+  Landal BE                       max=€    78,053
+  Landal DE                       max=€    81,377
+  Landal NL                       max=€    85,806
+  Roompot BE                      max=€    80,148
+  Roompot DE                      max=€   139,717
+  Roompot NL                      max=€    63,566
+
+
+── RESULTS ──────────────────────────────────────────────
+Account                             Current    Recommended     Change
+──────────────────────────────────────────────────────────────────────
+Landal BE                      €    35,305  €      78,053  ▲  +42,748 (+121.1%)
+Landal DE                      €    38,374  €      67,235  ▲  +28,861 (+75.2%)
+Landal NL                      €    43,245  €      85,150  ▲  +41,904 (+96.9%)
+Roompot BE                     €    37,239  €      80,148  ▲  +42,908 (+115.2%)
+Roompot DE                     €    65,990  €     137,502  ▲  +71,512 (+108.4%)
+Roompot NL                     €    32,285  €      51,913  ▲  +19,628 (+60.8%)
+──────────────────────────────────────────────────────────────────────
+TOTAL                          €   252,438  €     500,000
+
+Actual revenue (2024-02-04 to 2024-03-04):  €1,127,894
+Actual ROAS (2024-02-04 to 2024-03-04):     4.47x
+Projected revenue (Apr 2024):    €1,832,986
+Projected ROAS (Apr 2024):       3.67x
+Revenue uplift:                          €+705,091  (+62.5%)
+
+Running sensitivity analysis...
+Building Excel report → tests/fixtures/golden_baseline.xlsx
+Done. Report saved to: tests/fixtures/golden_baseline.xlsx

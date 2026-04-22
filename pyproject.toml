@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "budget-solver"
+version = "2.0.0a1"
+description = "Google Ads budget optimization tool using diminishing-returns response curves"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "google-ads>=25.0",
+    "scipy>=1.11",
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "openpyxl>=3.1",
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+[project.scripts]
+budget-solver = "budget_solver.cli:main"
+budget-solver-pull = "budget_solver.data_pull:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+budget_solver = ["py.typed"]

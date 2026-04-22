@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(tee:*)",
+      "Bash(pip install:*)",
+      "Bash(find:*)",
+      "Bash(ls:*)",
+      "Bash(timeout 60 python:*)",
+      "Bash(python3:*)",
+      "Bash(chmod:*)",
+      "Bash(./run_example.sh)",
+      "Bash(wc:*)",
+      "Bash(grep:*)",
+      "Bash(tree:*)",
+      "Bash(budget-solver-pull:*)",
+      "Bash(budget-solver:*)"
+    ]
+  }
+}

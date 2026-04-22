@@ -1,0 +1,14 @@
+{
+  "budget": 500000,
+  "allocations": {
+    "Landal BE": 78053.0,
+    "Landal DE": 67235.0,
+    "Landal NL": 85150.0,
+    "Roompot BE": 80148.0,
+    "Roompot DE": 137502.0,
+    "Roompot NL": 51913.0
+  },
+  "total_revenue": 1832986.0,
+  "projected_roas": 3.67,
+  "note": "Golden baseline generated from unrefactored optimizer.py on 2024-03-04. Any changes to this file must be intentional and documented."
+}

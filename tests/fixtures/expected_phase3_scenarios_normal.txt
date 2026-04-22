@@ -1,0 +1,100 @@
+Landal DE                      €   187,148  €     145,145  ▼  -42,003 (-22.4%)
+Landal NL                      €   610,551  €     659,845  ▲  +49,294 (+8.1%)
+Roompot BE                     €    56,319  €           0  ▼  -56,319 (-100.0%)
+Roompot DE                     €   184,213  €     107,131  ▼  -77,082 (-41.8%)
+Roompot NL                     €   393,194  €     295,386  ▼  -97,808 (-24.9%)
+──────────────────────────────────────────────────────────────────────
+TOTAL                          € 1,487,879  €   1,231,200
+
+Actual revenue (2026-03-24 to 2026-04-22):  €13,940,452
+Actual ROAS (2026-03-24 to 2026-04-22):     9.37x
+Projected revenue (May 2026):    €12,794,151
+Projected ROAS (May 2026):       10.39x
+Revenue uplift:                          €-1,146,301  (-8.2%)
+
+Running sensitivity analysis...
+
+====================================================================================================
+SCENARIOS
+====================================================================================================
+
+── SCENARIO A: Current Run Rate ─────────────────────────────────────────────────────────────────
+
+Budget:  €1,375,590
+Revenue: €13,466,782
+ROAS:    9.79x
+
+Account                          Monthly Spend     ROAS  Inst. mROAS Change
+────────────────────────────────────────────────────────────────────────────────────────────────────
+Landal BE                      €       46,596    5.54x        4.61x  — baseline
+Landal DE                      €      126,199   10.38x        6.86x  — baseline
+Landal NL                      €      611,690   11.11x        6.57x  — baseline
+Roompot BE                     €       46,798    7.20x        5.00x  — baseline
+Roompot DE                     €      118,576   11.24x        6.77x  — baseline
+Roompot NL                     €      425,730    8.07x        4.59x  — baseline
+
+── SCENARIO B: Target Budget ────────────────────────────────────────────────────────────────────
+
+Budget:  €1,231,200
+Revenue: €12,726,909
+ROAS:    10.34x
+Portfolio discrete mROAS vs prev: 5.12x
+
+Account                          Monthly Spend     ROAS  Inst. mROAS Change
+────────────────────────────────────────────────────────────────────────────────────────────────────
+Landal BE                      €       41,705    5.86x        5.16x  ▼ −€4,891
+Landal DE                      €      112,953   10.84x        7.67x  ▼ −€13,247
+Landal NL                      €      547,483   11.70x        7.34x  ▼ −€64,206
+Roompot BE                     €       41,886    7.61x        5.59x  ▼ −€4,912
+Roompot DE                     €      106,130   11.97x        7.56x  ▼ −€12,446
+Roompot NL                     €      381,043    8.56x        5.13x  ▼ −€44,687
+
+── SCENARIO C: Recommended ✅ RECOMMENDED ────────────────────────────────────────────────────────
+
+→ No cuts required — all accounts in Scenario B are below the 2.5x instantaneous mROAS floor. Allocation matches Scenario B exactly. BUDGET CAP binds — all accounts operating well below 2.5x floor. Breakeven headroom: €2,004,439 (portfolio ceiling: €3,235,639).
+
+Budget:  €1,231,200
+Revenue: €12,726,909
+ROAS:    10.34x
+Portfolio discrete mROAS vs prev: 5.12x
+
+Account                          Monthly Spend     ROAS  Inst. mROAS Change
+────────────────────────────────────────────────────────────────────────────────────────────────────
+Landal BE                      €       41,705    5.86x        5.16x  ▼ −€4,891
+Landal DE                      €      112,953   10.84x        7.67x  ▼ −€13,247
+Landal NL                      €      547,483   11.70x        7.34x  ▼ −€64,206
+Roompot BE                     €       41,886    7.61x        5.59x  ▼ −€4,912
+Roompot DE                     €      106,130   11.97x        7.56x  ▼ −€12,446
+Roompot NL                     €      381,043    8.56x        5.13x  ▼ −€44,687
+
+── SCENARIO D: Max Justified @ 2.5x Floor ───────────────────────────────────────────────────────
+
+Budget:  €3,235,639
+Revenue: €19,317,375
+ROAS:    5.97x
+Portfolio discrete mROAS vs prev: 3.29x
+
+Account                          Monthly Spend     ROAS  Inst. mROAS Change
+────────────────────────────────────────────────────────────────────────────────────────────────────
+Landal BE                      €       86,007    3.89x        2.50x  ▲ +€44,302
+Landal DE                      €      346,506    6.01x        2.50x  ▲ +€233,553
+Landal NL                      €    1,606,346    6.34x        2.50x  ▲ +€1,058,863
+Roompot BE                     €       93,623    4.79x        2.50x  ▲ +€51,737
+Roompot DE                     €      321,138    5.90x        2.50x  ▲ +€215,008
+Roompot NL                     €      782,019    5.60x        2.50x  ▲ +€400,976
+
+
+====================================================================================================
+SCENARIO COMPARISON
+====================================================================================================
+
+ID   Name                                    Budget         Revenue     ROAS Portfolio Disc. mROAS
+────────────────────────────────────────────────────────────────────────────────────────────────────
+A    Current Run Rate               €    1,375,590  €       13.47M    9.79x  — (baseline)   
+B    Target Budget                  €    1,231,200  €       12.73M   10.34x  5.12x   
+C    Recommended                    €    1,231,200  €       12.73M   10.34x  5.12x ✅
+D    Max Justified @ 2.5x Floor     €    3,235,639  €       19.32M    5.97x  3.29x   
+
+
+Building Excel report → budget_solver_20260422_0953.xlsx
+Done. Report saved to: budget_solver_20260422_0953.xlsx
