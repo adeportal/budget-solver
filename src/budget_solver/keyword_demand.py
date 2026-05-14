@@ -88,6 +88,7 @@ def pull_top_keywords(
     end_date   = datetime.today().strftime("%Y-%m-%d")
     start_date = (datetime.today() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
 
+    # keyword_view supports performance metrics; ad_group_criterion does not.
     query = f"""
         SELECT
             ad_group_criterion.keyword.text,
@@ -95,7 +96,7 @@ def pull_top_keywords(
             metrics.cost_micros,
             metrics.conversions,
             metrics.conversions_value
-        FROM ad_group_criterion
+        FROM keyword_view
         WHERE ad_group_criterion.type = 'KEYWORD'
           AND ad_group_criterion.keyword.match_type = 'EXACT'
           AND ad_group_criterion.status != 'REMOVED'

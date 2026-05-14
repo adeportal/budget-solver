@@ -52,32 +52,52 @@ def pull_auction_insights(
 
     def _query_window(start: str, end: str) -> dict[str, dict]:
         """Return {domain: {is, overlap, outranking}} for one window."""
+        # Auction insight metrics live on the `campaign` resource, segmented by
+        # segments.auction_insight_domain.  The `auction_insight_index` resource
+        # is not a valid standalone FROM target in the current API version.
         query = f"""
             SELECT
-                auction_insight_index.domain,
+                segments.auction_insight_domain,
                 metrics.auction_insight_search_impression_share,
                 metrics.auction_insight_search_overlap_rate,
                 metrics.auction_insight_search_outranking_share
-            FROM auction_insight_index
+            FROM campaign
             WHERE segments.date BETWEEN '{start}' AND '{end}'
               AND campaign.advertising_channel_type = 'SEARCH'
               AND campaign.name NOT LIKE '%| BR%'
               AND campaign.name NOT LIKE '%| PK%'
+              AND metrics.auction_insight_search_impression_share > 0
         """
-        results: dict[str, dict] = {}
+        # Accumulate lists then average — query returns one row per campaign per
+        # day per competitor, so we can't just take the last value.
+        acc: dict[str, dict[str, list]] = {}
         try:
             response = ga_service.search(customer_id=account_id, query=query)
             for row in response:
-                domain = row.auction_insight_index.domain
+                domain = row.segments.auction_insight_domain
                 if not domain:
                     continue
-                results[domain] = {
-                    "is":         _safe(row.metrics.auction_insight_search_impression_share),
-                    "overlap":    _safe(row.metrics.auction_insight_search_overlap_rate),
-                    "outranking": _safe(row.metrics.auction_insight_search_outranking_share),
-                }
+                if domain not in acc:
+                    acc[domain] = {"is": [], "overlap": [], "outranking": []}
+                acc[domain]["is"].append(_safe(row.metrics.auction_insight_search_impression_share))
+                acc[domain]["overlap"].append(_safe(row.metrics.auction_insight_search_overlap_rate))
+                acc[domain]["outranking"].append(_safe(row.metrics.auction_insight_search_outranking_share))
         except Exception as exc:
-            print(f"  WARNING: auction insights unavailable for {account_name} — {exc.__class__.__name__}")
+            msg = str(exc)
+            if "doesn't have access to metrics" in msg or "AUTHORIZATION_ERROR" in msg:
+                # Auction insight metrics require Standard Access on the developer token.
+                # Upgrade at: Google Ads UI → Admin → API Center → Request Standard Access.
+                print(f"  NOTE: auction insights require Standard Access developer token — skipping")
+            else:
+                print(f"  WARNING: auction insights unavailable for {account_name} — {exc.__class__.__name__}")
+
+        results = {}
+        for domain, vals in acc.items():
+            results[domain] = {
+                "is":         sum(vals["is"])         / len(vals["is"])         if vals["is"]         else 0.0,
+                "overlap":    sum(vals["overlap"])    / len(vals["overlap"])    if vals["overlap"]    else 0.0,
+                "outranking": sum(vals["outranking"]) / len(vals["outranking"]) if vals["outranking"] else 0.0,
+            }
         return results
 
     trailing = _query_window(trailing_start, trailing_end)
