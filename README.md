@@ -1,27 +1,49 @@
-# Budget Solver v2 — Strategic Budget Allocator
+# Budget Solver v3 — Intelligent Budget Allocator
 
-A Python tool that pulls Google Ads performance data and generates multi-scenario budget allocation strategies using diminishing-returns response curves constrained by a minimum marginal ROAS (mROAS) floor.
+A Python tool that pulls Google Ads performance data and generates multi-scenario budget allocation strategies using diminishing-returns response curves, a stack of market intelligence signals, and constrained nonlinear optimization.
 
-**Core philosophy:** Allocate budget to maximize revenue while ensuring every marginal euro spent returns at least your breakeven threshold (default: 2.5x mROAS). Avoid over-investing in high-ROAS accounts that can't scale beyond their current level.
+**Core philosophy:** Allocate budget to maximize revenue while ensuring every marginal euro spent returns at least your breakeven threshold (default: 2.5× mROAS). Avoid over-investing in high-ROAS accounts that cannot scale beyond their current level. Surface all assumptions and risks transparently so a human can override the model when market conditions demand it.
 
 ---
 
 ## What it does
 
-1. **Data pull** (`budget-solver-pull`) — queries the Google Ads API for 24 months of daily, account-level search campaign spend and revenue across your MCCs. Applies conversion lag correction to recent days.
+### Step 1 — Data pull (`budget-solver-pull`)
 
-2. **Scenario generation** (`budget-solver --scenarios`) — fits log response curves per account, calibrates against actual recent ROAS, and generates four strategic scenarios:
-   - **Scenario A:** Current run rate (baseline)
-   - **Scenario B:** Target budget allocated proportionally
-   - **Scenario C:** Recommended allocation (optimized with stability rules)
-   - **Scenario D:** Max justified spend (all accounts at mROAS floor)
+Queries the Google Ads API for 24 months of daily, account-level search campaign data across your MCCs. On each pull it also:
 
-3. **Output** — a 10-sheet Excel report with:
-   - Executive Summary (stakeholder brief)
-   - Scenario comparison table
-   - Per-scenario allocation details
-   - Extended Budget efficient frontier (C → D sweep)
-   - Curve diagnostics, outlier log, demand index
+- Applies **conversion lag correction** to recent days (per-account arrival profiles)
+- Pulls the **top-500 exact-match keywords** per account and fetches monthly search volumes from Keyword Planner → builds a per-account seasonal demand index
+- Pulls **auction insights** (competitor impression share, trailing vs prior 30 days) → saves for competitive pressure flags
+- Pulls **bid simulator** data (Google's own budget simulation points per campaign) → saves for model cross-check
+
+### Step 2 — Scenario generation (`budget-solver --scenarios`)
+
+Fits response curves per account, applies a stack of contextual corrections, and generates four strategic scenarios:
+
+| Scenario | Description |
+|----------|-------------|
+| **A — Current Run Rate** | Baseline. Spend extrapolated from last 7 days |
+| **B — Target Budget** | Proportional allocation of your `--budget` |
+| **C — Recommended ✅** | Optimized reallocation with stability rules |
+| **D — Max Justified** | All accounts at mROAS floor (theoretical ceiling) |
+
+### Step 3 — Excel report
+
+A multi-sheet workbook with every decision supported by evidence:
+
+| Sheet | Contents |
+|-------|----------|
+| Executive Summary | Headline KPIs + applied correction table |
+| Overview | Side-by-side A/B/C/D with corrections |
+| Scenario A/B/C/D | Per-account allocation, mROAS, move labels |
+| Extended Budget | Efficient frontier C → D |
+| **Market Intelligence** | Forecast adjustments, calibration quality, competitive landscape, simulator cross-check |
+| Curve Diagnostics | R², model type, breakeven spend per account |
+| Outlier Log | Excluded weeks and reason |
+| Demand Index | ISO week demand multipliers + chart |
+| Model Accuracy | Prediction error vs actuals (from feedback log) |
+| CPC Diagnostics | Spend/CPC trend per account |
 
 ---
 
@@ -32,48 +54,43 @@ A Python tool that pulls Google Ads performance data and generates multi-scenari
 | 8265762094 | Landal MCC |
 | 6917028372 | Roompot MCC |
 
-**Active markets:** Landal BE/NL/DE, Roompot BE/NL/DE (6 accounts across 2 MCCs)
+**Active markets:** Landal BE/NL/DE, Roompot BE/NL/DE (6 accounts, 2 MCCs)
 
 ---
 
 ## Prerequisites
 
 - Python 3.10+
-- Google Ads API developer token and OAuth credentials (see setup below)
-- pip-installable package: `pip install -e .`
+- Google Ads API developer token and OAuth credentials
+- `pip install -e .`
 
 ---
 
 ## Installation
 
 ```bash
-# Clone repo
 git clone <repo-url>
-cd budget-solver-v2
-
-# Install in editable mode
+cd budget-solver-v3-optimized
 pip install -e .
 
-# Verify installation
+# Verify
 budget-solver --help
 budget-solver-pull --help
 ```
 
-Dependencies: `google-ads`, `scipy`, `numpy`, `pandas`, `openpyxl`, `requests`
+Dependencies: `google-ads`, `scipy`, `numpy`, `pandas`, `openpyxl`
 
 ---
 
 ## Google Ads API Setup
 
-### 1. Create credentials folder
+### 1. Create credentials file
 
 ```bash
 mkdir -p ~/.config/landal
 ```
 
-### 2. Create `google-ads.yaml`
-
-Create file at `~/.config/landal/google-ads.yaml`:
+Create `~/.config/landal/google-ads.yaml`:
 
 ```yaml
 developer_token: YOUR_DEVELOPER_TOKEN
@@ -87,9 +104,7 @@ use_proto_plus: True
 **How to obtain:**
 - **Developer token:** Google Ads UI → Admin → API Centre
 - **OAuth client ID/secret:** Google Cloud Console → APIs & Services → Credentials (Desktop app)
-- **Refresh token:** Run OAuth flow once using `google-auth-oauthlib` (see below)
-
-### 3. Generate refresh token (first time only)
+- **Refresh token:** Run OAuth flow once:
 
 ```bash
 python -c "
@@ -105,267 +120,256 @@ print('Refresh token:', creds.refresh_token)
 "
 ```
 
-Paste the printed token into `google-ads.yaml`.
-
-**IMPORTANT:** Add `google-ads.yaml` to `.gitignore` — never commit credentials.
+**IMPORTANT:** `google-ads.yaml` is in `.gitignore` — never commit it.
 
 ---
 
 ## Typical Monthly Workflow
 
-### Step 1: Pull data
-
 ```bash
+# 1. Pull fresh data (runs ~5-10 minutes — also pulls keywords, auction insights, simulator)
 budget-solver-pull
+
+# 2. Generate scenarios for next month
+budget-solver --budget 1231200 --scenarios --forecast-month 2026-06
+
+# 3. Review output/budget_solver_YYYYMMDD_HHMM.xlsx
+#    Start with Executive Summary, then Scenario C, then Market Intelligence
 ```
-
-Outputs `output/core_markets.csv` (24 months, 6 core markets, lag-adjusted). Runtime: 2-5 minutes.
-
-### Step 2: Generate scenarios
-
-```bash
-budget-solver --budget 1231200 --scenarios
-```
-
-Outputs timestamped Excel file: `output/budget_solver_20260422_1133.xlsx`
-
-### Step 3: Review output
-
-Open Excel file. Key sheets:
-- **Executive Summary** — stakeholder brief with KPI table
-- **Overview** — portfolio view of all 4 scenarios
-- **Scenario C** — recommended allocation with action items
-- **Extended Budget** — efficient frontier showing where returns diminish
-
-### Step 4: Present to stakeholders
-
-Share Excel file. Flag any seasonality caveats (Easter timing, demand index shifts).
 
 ---
 
 ## CLI Reference
 
-### Basic usage
-
-```bash
-budget-solver --budget <monthly_eur>
-```
-
-### Scenario mode (recommended)
-
-```bash
-budget-solver --budget 1231200 --scenarios
-```
-
-Generates scenarios A/B/C/D with Excel report.
-
-### Common flags
+### Core flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--budget` | *required* | Total monthly budget (EUR) |
-| `--scenarios` | off | Generate 4-scenario report (A/B/C/D) |
-| `--min-mroas` | 2.5 | Minimum instantaneous mROAS floor (breakeven constraint) |
-| `--min "Landal BE:500,Roompot NL:1000"` | none | Per-account minimum spend (EUR/month) |
-| `--max "Landal DE:20000"` | none | Per-account maximum spend (EUR/month) |
-| `--training-months` | 6 | Months of history for curve fitting |
-| `--forecast-month YYYY-MM` | inferred | Forecast period (e.g., `2026-05`) |
+| `--scenarios` | on | Generate 4-scenario A/B/C/D report |
+| `--min-mroas` | 2.5 | Minimum instantaneous mROAS floor |
+| `--training-months` | 6 | Months of history used for curve fitting |
+| `--forecast-month YYYY-MM` | inferred | Month to forecast |
 | `--forecast-week 1-53` | inferred | ISO week for demand scaling |
-| `--extended-budget-steps` | 6 | Rows in Extended Budget sweep (C → D) |
-| `--no-calibrate` | off | Disable ROAS calibration (diagnostics only) |
-| `--no-outlier-removal` | off | Disable outlier filter |
-| `--normalize-demand` | off | Apply demand index before fitting (experimental) |
-| `--target conversions` | revenue | Optimize conversions instead of revenue |
-| `--output path.xlsx` | auto | Custom output filename |
 
-### Advanced examples
+### Spend constraints
 
 ```bash
-# With spend constraints
 budget-solver --budget 1231200 --scenarios \
-  --min "Landal BE:500,Roompot NL:1000" --max "Landal DE:20000"
+  --min "Landal BE:500,Roompot NL:1000" \
+  --max "Landal DE:20000"
+```
 
-# Adjust training window
+### Stability controls
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--max-account-changes` | 0 (all) | Limit optional moves to top-N by move value |
+| `--wow-cap` | 0.20 | Max week-over-week spend change per account |
+| `--no-apply-stability` | off | Disable stability rules entirely |
+
+### Model controls
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--two-stage` | off | Use spend → clicks → revenue model instead of direct |
+| `--normalize-demand` | off | Apply demand index before curve fitting |
+| `--no-calibrate` | off | Skip trailing ROAS calibration (diagnostics) |
+| `--no-outlier-removal` | off | Skip outlier filter |
+| `--demand-index-csv path` | auto | Override demand index with external CSV |
+
+### Common examples
+
+```bash
+# Standard monthly run
+budget-solver --budget 1231200 --scenarios --forecast-month 2026-06
+
+# With floor constraints
 budget-solver --budget 1231200 --scenarios \
-  --training-months 12
+  --min "Landal BE:30000" --max "Landal DE:150000"
 
-# Diagnostic mode (no calibration, no outlier removal)
-budget-solver --budget 1231200 \
-  --no-calibrate --no-outlier-removal
+# Wider training window (more stable curves)
+budget-solver --budget 1231200 --scenarios --training-months 12
 
-# Specify forecast period explicitly
-budget-solver --budget 1231200 --scenarios \
-  --forecast-month 2026-06
+# Diagnostic: see raw curves before calibration
+budget-solver --budget 1231200 --scenarios --no-calibrate
+
+# Two-stage model (separates CPC efficiency from conversion quality)
+budget-solver --budget 1231200 --scenarios --two-stage
 ```
 
 ---
 
 ## How the Model Works
 
-### Response curves
+### 1. Response curve fitting
 
 Each account gets a **log curve**: `revenue = a × ln(spend) + b`
 
-Marginal ROAS = `a / spend` — declines hyperbolically as spend increases. This matches observed behavior in small, saturating markets better than power curves.
+Marginal ROAS = `a / spend` — declines hyperbolically as spend increases. This matches observed diminishing returns in small, saturating markets better than linear or power curves.
 
-### Breakeven constraint (mROAS floor)
+**Fallback chain:** log → power (`revenue = a × spend^b`) → linear proxy (if n < 3 weeks). All accounts in a portfolio must use the same curve family (log or power) to allow valid cross-account mROAS comparisons.
 
-Default: 2.5x minimum instantaneous mROAS. The optimizer won't allocate spend beyond the point where `dRevenue/dSpend < 2.5`.
+**Two-stage model** (`--two-stage`): optionally fits `clicks = g(spend)` first, then multiplies by revenue-per-click. Separates CPC efficiency from conversion quality — important because Smart Bidding pushes into pricier auctions as spend increases, making the spend→clicks relationship deteriorate independently from click quality (CVR × AOV).
 
-**Why 2.5x?** Typical breakeven after variable costs (COGS ≈ 60%, so €1 revenue → €0.40 margin → need 2.5x ROAS for €1 return on €1 spend).
+### 2. Outlier removal
 
-Adjustable via `--min-mroas <value>`.
+Two-pass filter per account:
+1. Drop weeks with spend < 20% of median (low-spend periods where organic traffic dominates, inflating ROAS)
+2. Drop weeks with ROAS outside [Q1 − 2×IQR, Q3 + 2×IQR] (tracking outages, attribution anomalies)
 
-### Conversion lag correction
+### 3. Signal stack applied to every forecast
 
-Conversions are attributed to click date, so recent days (0-29 days ago) have incomplete data. The data pull applies a daily multiplier derived from observed conversion arrival profile:
-- Day 0 (today): 38.3% settled → multiply by 2.61x
-- Day 14: 78.8% settled → multiply by 1.27x
-- Day 30+: 100% settled → multiply by 1.0x
+After fitting, the raw curve prediction is multiplied by a chain of contextual corrections:
 
-Output columns: `conversion_value_adj`, `conversions_adj`, `lag_factor`.
+```
+raw_curve(weekly_spend)
+  × demand_index[forecast_week]     ← keyword search volume seasonality
+  × holiday_correction              ← this year's holiday density vs historical average
+  × weather_correction              ← forecast sunshine hours vs historical average
+  × WEEKS_PER_MONTH                 ← monthly scale conversion
+  × extrapolation_damping           ← discount beyond observed max spend
+  × calibration_factor              ← confidence-weighted trailing ROAS anchor
+  × bias_correction                 ← systematic over/under-prediction from accuracy log
+```
 
-### Curve calibration
+Each signal is described below.
 
-After fitting, each curve is anchored to the account's actual lag-adjusted ROAS from the last 30 days. This prevents over-prediction when historical high-ROAS periods inflate the model.
+#### Demand index
 
-**Calibration factor** = `actual_roas / model_roas_at_current_spend`. Applied as a multiplicative scale preserving the curve's shape (diminishing returns slope) while correcting absolute level.
+**Source:** Google Keyword Planner (top-500 exact-match keywords per account from generic campaigns, refreshed on every pull).
 
-### Outlier removal
+Converts monthly search volumes → ISO week 1-53 multipliers, normalized to mean = 1.0. Each account gets its own index (NL/DE/BE have different peak weeks — e.g., NL school holidays differ from DE). Falls back to Google Trends → internal ROAS-derived index if Keyword Planner is unavailable.
 
-Two-pass filter per account (unless `--no-outlier-removal`):
-1. **Pass 1:** Drop weeks with spend < 20% of median (low-spend periods where organic/remarketing dominates)
-2. **Pass 2:** Drop weeks with ROAS outside [Q1 - 2×IQR, Q3 + 2×IQR] (tracking outages, attribution errors)
+#### Holiday correction
 
-Removal log written to Excel "Outlier Log" sheet for review.
+**Source:** Hardcoded 5-year calendar (2024–2028) for NL, DE, BE school holidays and public holidays including Easter-derived moveable feasts.
 
-### Demand seasonality
+Counts holiday days in the forecast month vs the 2024–2025 average baked into the response curves. Returns a per-account correction factor (e.g., April 2026 with Easter gets ×1.52 for NL). Capped [0.60, 1.80]. Always applied — Easter timing shifts are among the most common causes of forecast error.
 
-Weekly demand index (ISO week 1-53) computed from median weekly ROAS across accounts. High-demand weeks (Easter ≈ 1.4x) vs low-demand (November ≈ 0.7x).
+#### Weather correction
 
-Forecast period predictions are scaled by the demand multiplier for that week. Enables like-for-like comparison of "efficiency at fixed demand level."
+**Source:** Open-Meteo API (free, no API key required).
 
-Optional: `--normalize-demand` applies demand index before curve fitting (experimental, isolates spend efficiency from seasonality).
+Compares forecast-month sunshine hours (from the 16-day forecast API + ERA5 archive for elapsed days) to the historical average for the same calendar month across 2023–2025. Sunshine hours are the strongest single predictor of outdoor leisure booking intent. Capped [0.80, 1.20]. Only activates within 30 days of the forecast month — beyond that, weather forecasts are unreliable and the factor returns 1.0.
 
-### Training window
+#### Extrapolation dampening
 
-Curves fitted on recent N months only (default: 6 via `--training-months`). Full history used for spend cap derivation but NOT for fitting.
+When recommended spend exceeds the maximum spend observed in the training data, the model is extrapolating. Beyond `max_obs_monthly`, incremental revenue is dampened exponentially:
 
-**Rationale:** Prevents over-predicting when historical high-ROAS periods (e.g., January 2025 with 19-32× ROAS) inflate expectations. Training window approach reflects current market conditions while allowing long lookback for data stability.
+`decay = e^(−2 × (spend / max_obs − 1))`
+
+At 1.5× max observed: only 37% of incremental revenue survives. At 2×: 14%. The curve remains smooth (no discontinuity), but the optimizer faces rapidly declining marginal returns in uncharted territory. Accounts where recommended spend exceeds 120% of max observed get an explicit `⚠ EXTRAPOLATION WARNING` in the console.
+
+#### Confidence-weighted calibration
+
+After fitting, each curve is anchored to the account's trailing 14-day lag-adjusted ROAS. The blend weight is scaled by a confidence score:
+
+`confidence = active_ratio × (1 − min(CV_of_daily_ROAS, 1.0))`
+`blend = 0.25 × confidence`
+
+- **active_ratio:** fraction of window days with positive spend (campaign paused = 0)
+- **CV:** coefficient of variation of daily ROAS (volatile window = low confidence)
+
+When confidence → 0 (paused campaigns, noisy window), the calibration factor collapses to 1.0 — the fitted curve stands on its own rather than anchoring to bad data. Calibration is capped at [0.70, 1.30] regardless.
+
+#### Bias correction
+
+On each run, the recommended allocation and predicted revenue are saved to `output/prediction_log.csv`. When actuals arrive the following month, prediction errors are scored. If a model has systematically over- or under-predicted for the last 2+ months, a correction factor (capped ±20%) is applied automatically.
+
+### 4. Optimization
+
+`scipy.optimize.minimize` with SLSQP method:
+- **Objective:** Maximize Σ predict_fn(spend_i) across accounts
+- **Constraint:** Σ spend_i = total_budget
+- **Bounds:** Per-account min/max (from `--min`/`--max` + auto-derived caps)
+
+**Auto spend caps:** default = 2× (max observed weekly spend × 4.33 weeks/month), or 2% of total budget (whichever is higher). Tightened further when impression pool ceiling analysis is available (see below).
+
+**mROAS floor:** The optimizer runs unconstrained, then accounts exceeding breakeven spend are capped at their breakeven point. Breakeven = spend where instantaneous mROAS = `--min-mroas`.
+
+### 5. Impression share ceiling
+
+If `search_impression_share` and `impressions` are in the data, the total available impression pool is estimated:
+
+`pool = impressions_won / avg_impression_share`
+
+Maximum achievable monthly revenue = `pool × CTR × revenue_per_click`. Binary search (brentq) finds the spend level where the curve hits this ceiling. If tighter than the auto cap, `effective_max` is updated before optimization runs — the optimizer cannot recommend spend that would require buying auctions that don't physically exist.
+
+### 6. Stability rules (Scenario C)
+
+Phase 4 stability rules prevent the optimizer from recommending operationally infeasible changes:
+
+- **Move value ranking:** Optional moves sorted by `|ΔSpend| × discrete_mROAS`. Top moves applied first.
+- **WoW cap:** Default 20% max change per account per week (phased implementation)
+- **Mandatory moves:** Accounts below mROAS floor always capped, regardless of stability limits
+
+Use `--max-account-changes N` to limit how many optional moves are applied (useful during volatile periods when you want to minimize account disruption).
 
 ---
 
-## Scenario Framework
+## Market Intelligence
 
-### Scenario A: Current Run Rate
+Every run produces a **Market Intelligence** section (console + Excel sheet) with four components:
 
-Baseline. Spend extrapolated from last 7 days to monthly run rate. Shows where you are today.
+### Competitive landscape (auction insights)
 
-**Use:** Anchor for comparison. "If we keep current daily caps for 30 days, we'll spend €X and generate €Y revenue."
+Pulls trailing vs prior 30-day competitor impression share per account from `auction_insight_index`. A competitor surging > +10pp in IS is a leading indicator that CPCs and CVR will come under pressure — not captured by response curves at all. Displayed as a risk flag next to the recommended allocation. **No math is changed; this is informational only.**
 
-### Scenario B: Target Budget
+```
+── COMPETITIVE LANDSCAPE ─────────────────────────────────────────────────
+  Account                        Competitor                  Trailing IS  Prior IS    Δ
+  Landal NL                      booking.com                      35%       15%   +20%  ⚠ SURGE
+```
 
-Proportional allocation. Takes your `--budget` parameter and splits it across accounts in proportion to their current spend.
+### Simulator cross-check
 
-**Use:** Naive allocation. "If we scale all accounts up/down by 10%, what happens?"
+Pulls `campaign_simulation` (type=BUDGET) from Google Ads. Each simulation point is Google's own prediction of (spend → conversion_value) from their internal auction model — forward-looking, aware of current competitor bids and Quality Scores. At recommended spend, compares model prediction vs simulator:
 
-Often includes accounts below mROAS floor (flagged in warnings).
+- < 10% divergence: good agreement ✓
+- 10–20%: monitor
+- > 20%: `⚠ diverge` — treat recommendation with extra caution
 
-### Scenario C: Recommended ✅
+### CPC trend diagnostic
 
-Optimized allocation with Phase 4 stability rules:
-- Reallocations ranked by `move_value = |delta_spend| × discrete_mROAS`
-- Optional moves ranked by move value (|ΔSpend| × discrete mROAS). All moves applied by default. Use --max-account-changes N to limit during volatile periods.
-- Mandatory floor caps always applied (accounts below mROAS breakeven)
-- 20% WoW change cap (gradual phase-in recommended for large cuts)
-
-**Use:** What you should implement. Balances revenue upside with operational feasibility.
-
-### Scenario D: Max Justified @ 2.5x Floor
-
-Theoretical maximum. All accounts at mROAS floor (breakeven). Shows total addressable market within profitability constraint.
-
-**Use:** "How much could we scale if budget were uncapped?" Helps CFO understand incremental opportunity beyond C.
-
-**Portfolio discrete mROAS (C → D)** shows incremental return on the gap budget. If C → D discrete mROAS = 3.16x and you have €1.7M headroom, you know every euro between C and D returns 3.16x.
+Always-on comparison of trailing 30-day CPC vs training-period CPC per account. Rising CPC > 15% means the spend→clicks relationship is becoming less efficient — the response curve may be over-optimistic at higher spend levels.
 
 ---
 
-## Interpreting the Output
-
-### Executive Summary sheet
-
-- **KPI table:** Budget/Revenue/Blended ROAS for A/B/C/D
-- **Uplift vs B:** Revenue gain from reallocation (C vs B)
-- **Methodology:** Summary of approach and constraints
-- **Scenario findings:** Narrative summaries from Phase 5
-- **Top action recommendations:** Extracted from Scenario C
-
-### Overview sheet
-
-- **Portfolio table:** Side-by-side A/B/C/D comparison
-- **Key transitions:** Discrete mROAS for A→B, B→C, C→D
-- **Binding constraint diagnosis:** Budget vs breakeven caps
-- **Conditional formatting:** Inst. mROAS <2.5x highlighted red, >5x highlighted green
-
-### Scenario sheets (A/B/C/D)
-
-- **Allocation table:** Per-account daily/monthly spend, revenue, inst. mROAS
-- **Move labels:** "▲ +€X (+Y%)" for increases, "▼ -€X (-Y%)" for decreases
-- **Conditional formatting:** mROAS thresholds colored
-- **Action items:** (C only) What to change from B, with phasing guidance
-
-### Extended Budget sheet
-
-Efficient frontier sweep from C → D in equal budget increments (default: 6 steps).
-
-**Chart:** Budget (x-axis) vs Revenue (primary y) + Incremental ROAS (secondary y, dashed orange).
-
-**Use:** Visual answer to "where does incremental return drop below acceptable threshold?"
-
-Example: Incremental ROAS sequence 4.78x → 3.49x → 2.90x → 2.48x → 2.13x shows diminishing returns. CFO can see that pushing beyond €2.5M budget yields <2.5x incremental return.
-
-### Curve Diagnostics sheet
-
-Per-account table: R², model type, data points, calibration factor, training window, breakeven @ 2.5x floor.
-
-**What to watch:**
-- **R² < 0.5:** Weak fit, treat recommendations with wider confidence bands
-- **Calibration factor << 1.0:** Model over-predicted, actual recent ROAS much lower than fitted curve suggested
-- **Breakeven well above current spend:** Account can scale significantly before hitting floor
-
-### Key metrics explained
+## Interpreting Key Metrics
 
 | Metric | Formula | Meaning |
 |--------|---------|---------|
-| **Blended ROAS** | Total revenue ÷ Total spend | Portfolio-level return |
-| **Inst. mROAS** | `dRevenue/dSpend` at current allocation | Marginal return on next euro (instantaneous) |
-| **Discrete mROAS** | `ΔRevenue / ΔBudget` between scenarios | Average incremental return on scenario transition |
-| **Actual ROAS** | Lag-adjusted revenue (last 30d) ÷ spend (last 30d) | What you're achieving now |
-| **Projected ROAS** | Curve-predicted revenue ÷ recommended spend | Model expectation at new allocation |
+| **Blended ROAS** | Total revenue ÷ total spend | Portfolio-level return |
+| **Inst. mROAS** | `dRevenue/dSpend` at a given spend | Marginal return on the next euro (instantaneous derivative) |
+| **Discrete mROAS** | `ΔRevenue / ΔSpend` between scenarios | Average incremental return on a spend change |
+| **Actual ROAS** | Lag-adj. revenue (last 30d) ÷ spend (last 30d) | Observed baseline performance |
+| **Projected ROAS** | Predicted revenue ÷ recommended spend | Model expectation at new allocation |
+| **Calibration factor** | Actual ROAS / model ROAS at current spend | Scale applied to correct absolute curve level |
+| **Confidence** | active_ratio × (1 − CV) | Reliability of the trailing calibration window |
 
 **Inst. mROAS thresholds:**
-- `< 2.5x`: Below floor — value destruction on every marginal euro. Cap immediately.
-- `2.5x - 4.0x`: Monitor closely — above floor but limited headroom.
-- `≥ 4.0x`: Healthy return — room to scale if budget allows.
+- `< 2.5×`: Below floor — cap immediately
+- `2.5–4.0×`: Monitor — above floor but limited headroom
+- `≥ 4.0×`: Healthy — room to scale
 
 ---
 
 ## Caveats & Limitations
 
-See `LIMITATIONS.md` for full discussion. Key points:
+1. **Log curve extrapolation:** No hard saturation ceiling. Scenario D is theoretical — real curves may plateau before predicted revenue. Extrapolation dampening applies a discount, but treat recommendations beyond 1.5× observed max spend with care.
 
-1. **Log curve extrapolation:** No saturation ceiling. Scenario D is theoretical — real curves may plateau before reaching predicted revenue.
+2. **Incrementality not measured:** Curves encode observed revenue (paid + organic halo). ROAS may be inflated by brand search attribution. The optimizer works on relative efficiency across accounts, which is less sensitive to absolute ROAS level.
 
-2. **Incrementality not measured:** Curves encode observed revenue (paid + organic halo), not incremental revenue from ads. ROAS may be inflated by brand search.
+3. **Bid strategy translation:** The optimizer outputs monthly spend targets. In Google Ads you implement these as daily budget caps and/or tROAS/tCPA adjustments. Large changes (> 20% budget) should be phased over 2–4 weeks to allow Smart Bidding to adapt.
 
-3. **Bid strategy translation:** Optimizer outputs daily budget caps. You must translate to bid adjustments (tROAS targets, tCPA caps) in Google Ads UI.
+4. **Calibration window risk:** If the trailing 14 days are unrepresentative (paused campaigns, promo spike, tracking outage), the confidence-weighted calibration suppresses the anchor — but the confidence score will show low in the Market Intelligence sheet. Run with `--no-calibrate` to compare.
 
-4. **30-day calibration window:** If trailing 30 days are unrepresentative (promo spike, tracking outage), calibration anchors to that anomaly. Use `--no-calibrate` to diagnose.
+5. **Weather / holiday corrections:** Both are based on demand proxies (sunshine hours, calendar days). They capture the expected effect of external conditions on booking intent but not one-off events (a viral social post, a major competitor sale). Use your own judgement when market conditions are unusual.
 
-5. **Excluded campaign types:** Pmax, DemandGen, Display not in scope. SEARCH campaigns only.
+6. **Auction insights lag:** Pulled at data-pull time (not at run time). If you run the optimizer several days after the pull, the competitive picture may have shifted.
 
-6. **Easter timing shifts:** If Easter falls in different weeks year-over-year, April projections may be conservative or over-optimistic.
+7. **SEARCH campaigns only:** Pmax, DemandGen, Display, Shopping not in scope.
 
 ---
 
@@ -373,109 +377,72 @@ See `LIMITATIONS.md` for full discussion. Key points:
 
 | Problem | Solution |
 |---------|----------|
-| `GoogleAdsException: AuthenticationError` | Check `google-ads.yaml` paths and credentials validity (refresh token may have expired) |
-| `No data returned` | Confirm MCC IDs in `CHILD_MCCS`, check campaign type filter (SEARCH only) |
-| `Negative revenue predicted` | Data quality issue — run with `--no-calibrate` to inspect raw curve fit |
-| `scipy.optimize failed` | Too few accounts or extreme min/max constraints — relax bounds or increase `--training-months` |
-| `Output ROAS too high` | Try `--training-months 12` to include more varied ROAS periods, or `--no-calibrate` to see raw model |
-| `R² very low (< 0.4)` | Insufficient spend variation in training window — consider filtering out or extending `--training-months` |
-| `Marginal ROI < 1.0 at optimal` | Model predicts negative returns at recommended spend — check curve fit quality, may indicate data issue |
-
----
-
-## Example Run
-
-```bash
-$ budget-solver --budget 1231200 --scenarios
-
-Loading data from: core_markets.csv
-  Using lag-adjusted conversion values (conversion_value_adj).
-Loaded 4,386 rows across 6 accounts.
-
-Training window: last 6 months (2025-10-22 to 2026-04-22)
-
-Outlier removal: 10 week(s) excluded across 4 account(s)
-  Landal BE                       3 week(s) removed
-  Landal NL                       5 week(s) removed
-  ...
-
-Fitting response curves:
-  Landal BE                       model=log              R²=0.425  n=24
-  Landal DE                       model=log              R²=0.776  n=26
-  Landal NL                       model=log              R²=0.815  n=22
-  ...
-
-SCENARIO COMPARISON
-ID   Name                                    Budget         Revenue     ROAS Portfolio Disc. mROAS
-────────────────────────────────────────────────────────────────────────────────────────────────────
-A    Current Run Rate               €    1,375,590  €       12.55M    9.12x  — (baseline)
-B    Target Budget                  €    1,231,200  €       11.87M    9.64x  4.71x
-C    Recommended                    €    1,244,726  €       12.06M    9.69x  14.40x ✅
-D    Max Justified @ 2.5x Floor     €    2,993,085  €       17.58M    5.87x  3.16x
-
-Building Excel report → budget_solver_20260422_1133.xlsx
-Done. Report saved to: budget_solver_20260422_1133.xlsx
-```
+| `AuthenticationError` | Check `google-ads.yaml`, refresh token may have expired |
+| No data returned | Confirm MCC IDs in `CHILD_MCCS`, check SEARCH campaign filter |
+| Negative revenue predicted | Run `--no-calibrate` to inspect raw curve; check for zero/negative conversion_value rows |
+| `scipy.optimize failed` | Relax `--min`/`--max` constraints or increase `--training-months` |
+| ROAS seems too high | Use `--training-months 12` or `--no-calibrate` to check without trailing ROAS anchor |
+| R² < 0.4 | Insufficient spend variation in training window; try extending `--training-months` |
+| `⚠ low conf` on calibration | Campaign paused or volatile trailing window; model is falling back to curve-only (expected) |
+| `⚠ EXTRAPOLATION WARNING` | Recommended spend >> observed max; dampening applied, but verify with simulator cross-check |
+| Keyword demand pull fails | Keyword Planner quota may be exhausted; optimizer falls back to Google Trends → internal index |
+| Weather correction skipped | Network issue or month > 30 days ahead; falls back to 1.0 (no adjustment) |
 
 ---
 
 ## File Structure
 
 ```
-budget-solver-v2/
-├── src/
-│   └── budget_solver/
-│       ├── cli.py              # Main CLI entry point
-│       ├── data_pull.py        # Google Ads API data pull
-│       ├── scenarios.py        # Scenario generation (A/B/C/D)
-│       ├── solver.py           # Optimization engine
-│       ├── curves.py           # Response curve fitting
-│       ├── excel/              # Excel report generation
-│       │   ├── __init__.py     # build_excel() orchestrator
-│       │   ├── builders.py     # Overview + scenario sheets
-│       │   └── phase6b.py      # Extended Budget + diagnostics
-│       └── constants.py        # Color codes, weeks/month
-├── tests/
-│   └── fixtures/
-│       └── core_markets_stress.csv  # Example input data
-├── output/                     # Generated files (ignored by git)
+budget-solver-v3-optimized/
+├── src/budget_solver/
+│   ├── cli.py                  # Main CLI entry point + orchestration
+│   ├── data_pull.py            # Google Ads API data pull
+│   ├── data.py                 # Data loading, aggregation, outlier removal
+│   ├── curves.py               # Response curve fitting (log/power/2-stage)
+│   ├── mroas.py                # Marginal ROAS calculations
+│   ├── scenarios.py            # Scenario generation (A/B/C/D)
+│   ├── stability.py            # Phase 4 stability rules
+│   ├── solver.py               # SLSQP optimization engine
+│   ├── prediction_log.py       # Prediction persistence + accuracy feedback loop
+│   ├── keyword_demand.py       # Keyword Planner demand index
+│   ├── holiday_calendar.py     # NL/DE/BE holiday calendar 2024-2028
+│   ├── weather.py              # Open-Meteo sunshine correction
+│   ├── auction_insights.py     # Competitor IS delta (auction insights)
+│   ├── bid_simulator.py        # Google bid simulator cross-check
+│   ├── trends.py               # Google Trends fallback demand index
+│   ├── narrative.py            # Scenario narrative generation
+│   ├── constants.py            # Color codes, weeks/month, shared constants
+│   └── excel/
+│       ├── __init__.py         # build_excel() orchestrator
+│       ├── builders.py         # Overview + scenario sheets
+│       ├── phase6b.py          # Extended Budget + curve diagnostics
+│       ├── diagnostics.py      # Model accuracy + CPC diagnostics sheets
+│       ├── market_intelligence.py  # Market Intelligence sheet
+│       └── styling.py          # Shared cell formatting helpers
+├── output/                     # Generated files (git-ignored)
 │   ├── core_markets.csv        # Data pull output
-│   └── budget_solver_*.xlsx    # Optimizer reports
-├── README.md                   # This file
-├── LIMITATIONS.md              # Model constraints and caveats
-├── CHANGELOG.md                # Version history
-├── pyproject.toml              # Package metadata
-└── requirements.txt            # Dependencies
+│   ├── keyword_demand_index.csv
+│   ├── keyword_list.csv
+│   ├── auction_insights.csv
+│   ├── bid_simulator.csv
+│   ├── prediction_log.csv
+│   └── budget_solver_*.xlsx
+├── tests/
+├── pyproject.toml
+└── requirements.txt
 ```
 
 ---
 
 ## Development
 
-### Running tests
-
 ```bash
+# Install in editable mode
+pip install -e .
+
+# Run tests
 pytest tests/
-```
 
-### Type checking
-
-```bash
+# Type check
 mypy src/budget_solver
 ```
-
-### Installing in editable mode
-
-```bash
-pip install -e .
-```
-
-Changes to `src/budget_solver/` immediately reflected in `budget-solver` command.
-
----
-
-## Support
-
-Issues and feature requests: <repo-url>/issues
-
-For questions about Google Ads API setup, see official docs: https://developers.google.com/google-ads/api/docs/start
