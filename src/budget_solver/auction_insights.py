@@ -40,68 +40,89 @@ def pull_auction_insights(
     trailing_end: str,
     prior_start: str,
     prior_end: str,
+    login_customer_id: str | None = None,
 ) -> list[dict]:
     """
     Pull auction insight metrics for two date windows and return merged rows.
+
+    login_customer_id: the MCC that is the direct parent of this account.
+    Required for auction insight metrics — cross-manager access is not enough.
+    The client's login_customer_id is temporarily overridden and restored.
 
     Each returned dict has:
       account_name, domain, trailing_is, prior_is, is_delta,
       overlap_rate, outranking_share
     """
-    ga_service = client.get_service("GoogleAdsService")
+    # Auction insight metrics require the login_customer_id to be the direct
+    # parent MCC of the queried account. Override temporarily if provided.
+    original_login_id = getattr(client, "login_customer_id", None)
+    if login_customer_id:
+        client.login_customer_id = login_customer_id
 
-    def _query_window(start: str, end: str) -> dict[str, dict]:
-        """Return {domain: {is, overlap, outranking}} for one window."""
-        # Auction insight metrics live on the `campaign` resource, segmented by
-        # segments.auction_insight_domain.  The `auction_insight_index` resource
-        # is not a valid standalone FROM target in the current API version.
-        query = f"""
-            SELECT
-                segments.auction_insight_domain,
-                metrics.auction_insight_search_impression_share,
-                metrics.auction_insight_search_overlap_rate,
-                metrics.auction_insight_search_outranking_share
-            FROM campaign
-            WHERE segments.date BETWEEN '{start}' AND '{end}'
-              AND campaign.advertising_channel_type = 'SEARCH'
-              AND campaign.name NOT LIKE '%| BR%'
-              AND campaign.name NOT LIKE '%| PK%'
-              AND metrics.auction_insight_search_impression_share > 0
-        """
-        # Accumulate lists then average — query returns one row per campaign per
-        # day per competitor, so we can't just take the last value.
-        acc: dict[str, dict[str, list]] = {}
-        try:
-            response = ga_service.search(customer_id=account_id, query=query)
-            for row in response:
-                domain = row.segments.auction_insight_domain
-                if not domain:
-                    continue
-                if domain not in acc:
-                    acc[domain] = {"is": [], "overlap": [], "outranking": []}
-                acc[domain]["is"].append(_safe(row.metrics.auction_insight_search_impression_share))
-                acc[domain]["overlap"].append(_safe(row.metrics.auction_insight_search_overlap_rate))
-                acc[domain]["outranking"].append(_safe(row.metrics.auction_insight_search_outranking_share))
-        except Exception as exc:
-            msg = str(exc)
-            if "doesn't have access to metrics" in msg or "AUTHORIZATION_ERROR" in msg:
-                # Auction insight metrics require Standard Access on the developer token.
-                # Upgrade at: Google Ads UI → Admin → API Center → Request Standard Access.
-                print(f"  NOTE: auction insights require Standard Access developer token — skipping")
-            else:
-                print(f"  WARNING: auction insights unavailable for {account_name} — {exc.__class__.__name__}")
+    try:
+        ga_service = client.get_service("GoogleAdsService")
 
-        results = {}
-        for domain, vals in acc.items():
-            results[domain] = {
-                "is":         sum(vals["is"])         / len(vals["is"])         if vals["is"]         else 0.0,
-                "overlap":    sum(vals["overlap"])    / len(vals["overlap"])    if vals["overlap"]    else 0.0,
-                "outranking": sum(vals["outranking"]) / len(vals["outranking"]) if vals["outranking"] else 0.0,
-            }
-        return results
+        def _query_window(start: str, end: str) -> dict[str, dict]:
+            """Return {domain: {is, overlap, outranking}} for one window."""
+            # Auction insight metrics live on the `campaign` resource, segmented by
+            # segments.auction_insight_domain.  Do NOT filter on the auction insight
+            # metric in the WHERE clause — GAQL does not support WHERE filtering on
+            # segmented auction insight metrics and it causes access errors.
+            query = f"""
+                SELECT
+                    segments.auction_insight_domain,
+                    metrics.auction_insight_search_impression_share,
+                    metrics.auction_insight_search_overlap_rate,
+                    metrics.auction_insight_search_outranking_share
+                FROM campaign
+                WHERE segments.date BETWEEN '{start}' AND '{end}'
+                  AND campaign.advertising_channel_type = 'SEARCH'
+                  AND campaign.name NOT LIKE '%| BR%'
+                  AND campaign.name NOT LIKE '%| PK%'
+            """
+            # Accumulate lists then average — query returns one row per campaign per
+            # day per competitor, so we can't just take the last value.
+            acc: dict[str, dict[str, list]] = {}
+            try:
+                response = ga_service.search(customer_id=account_id, query=query)
+                for row in response:
+                    domain = row.segments.auction_insight_domain
+                    if not domain:
+                        continue
+                    is_val = _safe(row.metrics.auction_insight_search_impression_share)
+                    if is_val == 0.0:
+                        continue  # filter zeros in Python rather than GAQL
+                    if domain not in acc:
+                        acc[domain] = {"is": [], "overlap": [], "outranking": []}
+                    acc[domain]["is"].append(is_val)
+                    acc[domain]["overlap"].append(_safe(row.metrics.auction_insight_search_overlap_rate))
+                    acc[domain]["outranking"].append(_safe(row.metrics.auction_insight_search_outranking_share))
+            except Exception as exc:
+                msg = str(exc)
+                if "DEVELOPER_TOKEN" in msg or "developer token" in msg.lower():
+                    print(f"  NOTE: auction insights require Standard Access developer token — skipping")
+                elif "AUTHORIZATION_ERROR" in msg or "doesn't have access" in msg:
+                    print(f"  WARNING: auction insights — authorization error for {account_name} "
+                          f"(check login_customer_id matches direct parent MCC): {exc.__class__.__name__}")
+                else:
+                    print(f"  WARNING: auction insights unavailable for {account_name} — {exc.__class__.__name__}: {exc}")
 
-    trailing = _query_window(trailing_start, trailing_end)
-    prior    = _query_window(prior_start,    prior_end)
+            results = {}
+            for domain, vals in acc.items():
+                results[domain] = {
+                    "is":         sum(vals["is"])         / len(vals["is"])         if vals["is"]         else 0.0,
+                    "overlap":    sum(vals["overlap"])    / len(vals["overlap"])    if vals["overlap"]    else 0.0,
+                    "outranking": sum(vals["outranking"]) / len(vals["outranking"]) if vals["outranking"] else 0.0,
+                }
+            return results
+
+        trailing = _query_window(trailing_start, trailing_end)
+        prior    = _query_window(prior_start,    prior_end)
+
+    finally:
+        # Always restore original login_customer_id
+        if original_login_id is not None:
+            client.login_customer_id = original_login_id
 
     # All domains seen in either window
     all_domains = set(trailing) | set(prior)
@@ -130,11 +151,16 @@ def pull_all_auction_insights(
     client,
     account_map: dict[str, str],
     lookback_days: int = 30,
+    account_mcc_map: dict[str, str] | None = None,
 ) -> pd.DataFrame:
     """
     Pull auction insights for all accounts and return a combined DataFrame.
 
-    account_map: {account_name: account_id}
+    account_map:     {account_name: account_id}
+    account_mcc_map: {account_name: mcc_id} — direct parent MCC for each account.
+                     Auction insight metrics require the login_customer_id to be
+                     the direct parent MCC, not a cross-manager MCC. Pass this so
+                     each account is queried through the right MCC hierarchy.
     """
     today = datetime.today()
 
@@ -148,11 +174,13 @@ def pull_all_auction_insights(
 
     all_rows = []
     for acc_name, acc_id in account_map.items():
+        mcc_id = account_mcc_map.get(acc_name) if account_mcc_map else None
         print(f"  Pulling auction insights: {acc_name} ...", end=" ", flush=True)
         rows = pull_auction_insights(
             client, acc_id, acc_name,
             trailing_start, trailing_end,
             prior_start, prior_end,
+            login_customer_id=mcc_id,
         )
         all_rows.extend(rows)
         n_surge = sum(1 for r in rows if r["is_delta"] > _SURGE_THRESHOLD)

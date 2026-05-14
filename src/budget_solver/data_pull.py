@@ -335,12 +335,17 @@ def main():
 
     client = GoogleAdsClient.load_from_storage(YAML_PATH, version="v23")
 
-    # List child accounts across all MCCs
+    # List child accounts across all MCCs.
+    # Track which MCC each account belongs to — auction insight metrics require
+    # login_customer_id to be the direct parent MCC (cross-manager access denied).
     accounts = []
+    account_mcc_map: dict[str, str] = {}  # account_name → mcc_id
     for mcc_id, mcc_name in CHILD_MCCS.items():
         print(f"Fetching child accounts under {mcc_name} ({mcc_id})...")
         found = get_child_accounts(client, mcc_id)
         print(f"  Found {len(found)} account(s)")
+        for acc in found:
+            account_mcc_map[acc["name"]] = mcc_id
         accounts.extend(found)
     print(f"\nTotal accounts: {len(accounts)}\n")
 
@@ -501,7 +506,9 @@ def main():
             pull_all_auction_insights,
             OUTPUT_INSIGHTS_CSV,
         )
-        insights_df = pull_all_auction_insights(client, core_account_map)
+        insights_df = pull_all_auction_insights(
+            client, core_account_map, account_mcc_map=account_mcc_map
+        )
         if not insights_df.empty:
             insights_df.to_csv(OUTPUT_INSIGHTS_CSV, index=False)
             print(f"Auction insights saved    : {OUTPUT_INSIGHTS_CSV.resolve()}")
