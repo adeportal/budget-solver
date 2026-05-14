@@ -518,16 +518,17 @@ def main():
     #          blend = _CAL_BLEND × confidence
     # When confidence → 0 the calibration scale collapses to 1.0 (no adjustment),
     # letting the fitted curve stand on its own rather than anchoring to bad data.
-    # Backtest (April 2026) showed three calibration issues that caused ~+36pp error:
-    # 1. _CAL_BLEND=0.25 was too weak — at 90% confidence the blend is only 22.5%,
-    #    leaving 77.5% of the prediction anchored to the raw curve's absolute level.
-    # 2. cal_roas used raw conversion_value (not lag-adjusted) from only 14 days;
-    #    lag-incomplete recent days systematically understate actual ROAS.
-    # 3. The 14-day window was too short to produce a stable ROAS estimate.
-    # Fix: raise blend to 0.75, use actual_roas (lag-adjusted 30d) for the ROAS anchor,
-    # keep the 14-day window only for the confidence/volatility signal.
+    # Backtest (April 2026) showed calibration issues:
+    # - cal_roas was using raw conversion_value (not lag-adjusted) — understates ROAS for
+    #   recent days with incomplete attribution. Fixed: use actual_roas (lag-adjusted 30d).
+    # - High blend (0.75) over-anchored to the trailing-window ROAS and degraded forecasts
+    #   when the forecast period operates at a different spend level than the calibration
+    #   anchor. April backtest showed uncalibrated curves were more accurate than 0.75-blend
+    #   calibrated curves. Settled on 0.40 as a light touch that helps without over-fitting.
+    # - 14-day window kept for confidence/volatility signal only.
     _CAL_WINDOW_DAYS = 14
-    _CAL_BLEND       = 0.75   # raised from 0.25 — backtest showed 0.25 left curves under-anchored
+    _CAL_BLEND       = 0.40   # 0.75 overshot — April backtest showed uncalibrated curves accurate;
+                               # high blend over-anchored to March ROAS and degraded April forecasts
     _CAL_CAP_LO      = 0.7
     _CAL_CAP_HI      = 1.3
     _CAL_CV_MAX      = 1.0    # CV above this → confidence saturates to 0 contribution
@@ -584,6 +585,54 @@ def main():
                     predict_fns[acc] = (lambda x, fn=predict_fns[acc], s=capped_scale: fn(x) * s)
                     fn_i, params_i, r2_i, mname_i = model_info[acc]
                     model_info[acc] = (fn_i, params_i, r2_i, f'{mname_i}+cal')
+
+    # ── Walk-forward bias check (diagnostic only) ────────────
+    # Evaluate calibrated predictions against last 3 complete settled months and
+    # print the per-account over/under-prediction ratio for transparency.
+    # We do NOT apply a flat divisor: backtesting shows the ratio is spend-level
+    # dependent and applying a constant multiplier degrades rather than improves
+    # accuracy when forecast-period spend differs from the calibration anchor.
+    _DEBIAS_MONTHS   = 3
+    _DEBIAS_LAG_DAYS = 30
+
+    if not args.no_calibrate and date_col:
+        col_rv = 'conversion_value_adj' if 'conversion_value_adj' in df.columns else 'conversion_value'
+        settled_cutoff = (latest_date - pd.Timedelta(days=_DEBIAS_LAG_DAYS)).normalize()
+
+        debias_months: list[pd.Timestamp] = []
+        candidate = pd.Timestamp(settled_cutoff.year, settled_cutoff.month, 1)
+        while len(debias_months) < _DEBIAS_MONTHS:
+            m_end = candidate + pd.offsets.MonthEnd(0)
+            if m_end.normalize() <= settled_cutoff:
+                debias_months.append(candidate)
+            candidate -= pd.DateOffset(months=1)
+            if candidate < latest_date - pd.DateOffset(months=18):
+                break
+
+        if debias_months:
+            acc_ratios: dict[str, list] = {acc: [] for acc in predict_fns}
+            for m_start in debias_months:
+                m_end = (m_start + pd.offsets.MonthEnd(0)).normalize()
+                mdf   = df[
+                    (pd.to_datetime(df[date_col]) >= m_start) &
+                    (pd.to_datetime(df[date_col]) <= m_end)
+                ]
+                for acc, fn in predict_fns.items():
+                    sp = mdf[mdf['account_name'] == acc]['cost'].sum()
+                    rv = mdf[mdf['account_name'] == acc][col_rv].sum()
+                    if sp > 0 and rv > 0:
+                        pred = fn(sp)
+                        if pred > 0:
+                            acc_ratios[acc].append(pred / rv)
+
+            print('Model accuracy vs settled months (calibrated predictions / actual):')
+            for acc, ratios in acc_ratios.items():
+                if ratios:
+                    geo_mean = float(np.exp(np.mean(np.log(ratios))))
+                    tag = '⚠ over ' if geo_mean > 1.15 else ('⚠ under' if geo_mean < 0.85 else '  ok  ')
+                    months_str = ', '.join(f'{r:.2f}x' for r in ratios)
+                    print(f'  {acc:<30}  {tag}  geo={geo_mean:.3f}x  [{months_str}]')
+            print()
 
     # ── Print per-market spend + ROAS table ──────────────────
     if args.no_calibrate:
