@@ -35,6 +35,36 @@ def discrete_mroas(
     return delta_rev / delta_spend
 
 
+def breakeven_weekly_spend(params: list, model_name: str, min_mroas: float, max_weekly: float | None = None) -> float:
+    """
+    Solve inst. mROAS = min_mroas analytically for the WEEKLY spend level.
+
+    - Log  (y = a·ln(x) + b):  dy/dx = a/x        → x = a / min_mroas
+    - Power (y = a·x^b):       dy/dx = a·b·x^(b-1) → x = (a·b / min_mroas)^(1/(1-b))
+    - Linear (y = a·x):        dy/dx = a (constant) → no finite breakeven; capped at max_weekly
+
+    For power curves with b close to 1, the result can blow up. max_weekly caps it at a
+    practical upper bound (e.g. auto spend cap / WEEKS_PER_MONTH).
+    """
+    base_model = model_name.replace("+cal", "").replace("+2stage", "")
+    if base_model == "log":
+        result = params[0] / min_mroas
+    elif base_model == "power":
+        a, b = params[0], params[1]
+        if b <= 0 or b >= 1:
+            result = 0.0
+        else:
+            result = (a * b / min_mroas) ** (1.0 / (1.0 - b))
+    elif base_model == "linear_fallback":
+        result = float('inf')
+    else:
+        result = 0.0
+
+    if max_weekly is not None and result > max_weekly:
+        return max_weekly
+    return result
+
+
 def instantaneous_mroas(params: list, model_name: str, spend: float) -> float:
     """
     Calculate instantaneous mROAS: analytical derivative of the fitted curve at `spend`.
@@ -58,7 +88,7 @@ def instantaneous_mroas(params: list, model_name: str, spend: float) -> float:
         return 0.0
 
     # Strip "+cal" suffix if present (calibration doesn't change the derivative formula)
-    base_model = model_name.replace("+cal", "")
+    base_model = model_name.replace("+cal", "").replace("+2stage", "")
 
     if base_model == "log":
         a = params[0]

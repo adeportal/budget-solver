@@ -5,7 +5,7 @@ import numpy as np
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.chart import LineChart, Reference, marker
 
-from budget_solver.constants import NAV, BLUE, GRN, RED, LBLU, WHIT, WEEKS_PER_MONTH
+from budget_solver.constants import NAV, BLUE, GRN, RED, LBLU, WHIT
 from budget_solver.excel.styling import _hdr, _fmt_col, _border
 from budget_solver.solver import optimize_budget
 
@@ -73,15 +73,10 @@ def _build_extended_budget(wb, scenario_set, steps=6):
     # Collect sweep data
     sweep_results = []
 
-    # Build bounds for solver (all accounts at breakeven floor)
+    # Build bounds for solver — use Scenario D's per-account allocations as the ceiling,
+    # since D already has the correctly-computed breakeven spend for each account.
     min_spend = {acc: 0 for acc in accounts}
-    max_spend = {}
-    for acc in accounts:
-        fn, params, _, _ = scenario_set.model_info[acc]
-        a = params[0]
-        weekly_breakeven = a / min_mroas
-        monthly_breakeven = weekly_breakeven * WEEKS_PER_MONTH
-        max_spend[acc] = monthly_breakeven
+    max_spend = {a.account: a.monthly_spend for a in scen_d.allocations}
 
     for i, budget in enumerate(sweep_budgets):
         if i == 0:
@@ -93,15 +88,22 @@ def _build_extended_budget(wb, scenario_set, steps=6):
             alloc = {a.account: a.monthly_spend for a in scen_d.allocations}
             revenue = scen_d.revenue_monthly
         else:
-            # Middle rows: run actual solver at this budget level
-            # This gives the true efficient frontier (concave curve showing diminishing returns)
-            alloc, _, revenue = optimize_budget(
-                predict_fns=predict_fns,
-                total_budget=budget,
-                min_spend=min_spend,
-                max_spend=max_spend
-            )
-            # Revenue already computed by optimize_budget as return value
+            # Middle rows: run actual solver at this budget level.
+            # Fall back to linear interpolation between C and D if SLSQP fails
+            # (numerical convergence issues are intermittent with equality constraints).
+            try:
+                alloc, _, revenue = optimize_budget(
+                    predict_fns=predict_fns,
+                    total_budget=budget,
+                    min_spend=min_spend,
+                    max_spend=max_spend
+                )
+            except (RuntimeError, ValueError):
+                t = i / (steps - 1)  # interpolation factor 0→1 (C→D)
+                c_alloc = {a.account: a.monthly_spend for a in scen_c.allocations}
+                d_alloc = {a.account: a.monthly_spend for a in scen_d.allocations}
+                alloc = {acc: c_alloc[acc] + t * (d_alloc[acc] - c_alloc[acc]) for acc in accounts}
+                revenue = sum(predict_fns[acc](spend) for acc, spend in alloc.items())
 
         blended_roas = revenue / budget if budget > 0 else 0
 
@@ -259,7 +261,7 @@ def _build_curve_diagnostics(wb, scenario_set, model_info, account_data):
     row += 1
 
     # ── Data rows + mini charts ──
-    from budget_solver.constants import WEEKS_PER_MONTH
+    d_breakevens = {a.account: a.monthly_spend for a in scen_d.allocations} if scen_d else {}
 
     for i, account in enumerate(accounts):
         chart_anchor_row = row
@@ -267,9 +269,8 @@ def _build_curve_diagnostics(wb, scenario_set, model_info, account_data):
         fn, params, r2, mname = model_info[account]
         a = params[0]
 
-        # Breakeven at min_mroas
-        weekly_breakeven = a / min_mroas
-        monthly_breakeven = weekly_breakeven * WEEKS_PER_MONTH
+        # Breakeven at min_mroas — read from Scenario D (already correctly computed)
+        monthly_breakeven = d_breakevens.get(account, 0)
 
         # Training data
         data = account_data[account]

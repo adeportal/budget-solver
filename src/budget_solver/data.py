@@ -64,16 +64,18 @@ def aggregate_weekly(df):
     else:
         group_cols = ['account_name']
 
-    agg = df.groupby(group_cols).agg(
-        spend=('cost', 'sum'),
-        revenue=('conversion_value', 'sum')
-    ).reset_index()
+    agg_dict = {'spend': ('cost', 'sum'), 'revenue': ('conversion_value', 'sum')}
+    if 'clicks' in df.columns:
+        agg_dict['clicks'] = ('clicks', 'sum')
+
+    agg = df.groupby(group_cols).agg(**agg_dict).reset_index()
 
     result = {}
     for acc, grp in agg.groupby('account_name'):
         result[acc] = {
             'spend':   grp['spend'].values,
             'revenue': grp['revenue'].values,
+            'clicks':  grp['clicks'].values if 'clicks' in grp.columns else np.zeros(len(grp)),
             '_week':   grp['_week'].values if '_week' in grp.columns else np.arange(len(grp)),
         }
     return result
@@ -221,3 +223,111 @@ def remove_outliers(account_data, min_spend_pct=0.20, roas_iqr_mult=2.0):
         }
 
     return cleaned, removal_log
+
+
+def select_training_window_by_cv(
+    df: pd.DataFrame,
+    date_col: str,
+    latest_date,
+    candidates: list | None = None,
+) -> dict:
+    """
+    Select the optimal training window per account via 1-month holdout CV.
+
+    For each candidate window W (months), per account:
+      - Train on data from (latest_date - W months) to (latest_date - 1 month)
+      - Fit a log curve to the weekly spend/revenue in that window
+      - Predict revenue for the most recent month using actual weekly spend
+      - Compute WAPE = Σ|predicted - actual| / Σ actual  (0 = perfect)
+    Pick W with minimum WAPE.  Ties broken by largest W (more data preferred).
+
+    Returns dict {account_name: optimal_months_int}
+
+    Falls back to 6 months for accounts with insufficient data or flat spend.
+    """
+    from budget_solver.curves import fit_response_curve  # local import avoids circular dep
+
+    candidates = candidates or [3, 6, 9, 12]
+    DEFAULT_WINDOW = 6
+
+    latest_date = pd.Timestamp(latest_date).normalize()
+    df = df.copy()
+    df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+
+    # Test period: last full calendar month before latest_date
+    test_end   = (latest_date.replace(day=1) - pd.Timedelta(days=1)).normalize()
+    test_start = test_end.replace(day=1)
+
+    # We need at least 2 months of data before the test period for any window to work
+    if test_start <= latest_date - pd.DateOffset(months=max(candidates)):
+        pass  # Enough history
+
+    results: dict[str, int] = {}
+
+    for acc in df["account_name"].unique():
+        acc_df = df[df["account_name"] == acc].copy()
+
+        # Test period actuals
+        test_df = acc_df[
+            (acc_df[date_col] >= test_start) & (acc_df[date_col] <= test_end)
+        ]
+        if len(test_df) == 0 or test_df["cost"].sum() <= 0:
+            results[acc] = DEFAULT_WINDOW
+            continue
+
+        # Aggregate test period to weekly buckets (same as aggregate_weekly)
+        test_df = test_df.copy()
+        test_df["_week"] = test_df[date_col].dt.to_period("W")
+        test_weekly = (
+            test_df.groupby("_week")
+            .agg(spend=("cost", "sum"), revenue=("conversion_value", "sum"))
+            .reset_index()
+        )
+        if len(test_weekly) == 0 or test_weekly["spend"].sum() <= 0:
+            results[acc] = DEFAULT_WINDOW
+            continue
+
+        best_wape   = float("inf")
+        best_window = DEFAULT_WINDOW
+
+        for W in sorted(candidates, reverse=True):  # try larger windows first; ties → larger W wins
+            train_end   = test_start - pd.Timedelta(days=1)
+            train_start = latest_date - pd.DateOffset(months=W)
+
+            train_df = acc_df[
+                (acc_df[date_col] >= train_start) & (acc_df[date_col] <= train_end)
+            ].copy()
+            if len(train_df) == 0:
+                continue
+
+            train_df["_week"] = train_df[date_col].dt.to_period("W")
+            train_weekly = (
+                train_df.groupby("_week")
+                .agg(spend=("cost", "sum"), revenue=("conversion_value", "sum"))
+                .reset_index()
+            )
+            if len(train_weekly) < 3:
+                continue  # Too few weeks to fit a curve
+
+            try:
+                fn, _, _, _ = fit_response_curve(
+                    train_weekly["spend"].values,
+                    train_weekly["revenue"].values,
+                )
+                # Predict test weeks
+                predicted = np.array([fn(s) for s in test_weekly["spend"].values])
+                actual    = test_weekly["revenue"].values
+                denom     = np.sum(np.abs(actual))
+                if denom <= 0:
+                    continue
+                wape = float(np.sum(np.abs(predicted - actual)) / denom)
+            except Exception:
+                continue
+
+            if wape < best_wape:
+                best_wape   = wape
+                best_window = W
+
+        results[acc] = best_window
+
+    return results

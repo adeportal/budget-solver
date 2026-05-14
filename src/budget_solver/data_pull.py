@@ -48,72 +48,113 @@ from google.ads.googleads.errors import GoogleAdsException
 MICROS_PER_UNIT = 1_000_000
 
 # ─────────────────────────────────────────────────────────────
-# CONVERSION LAG PROFILE
+# CONVERSION LAG PROFILES — PER ACCOUNT
 # ─────────────────────────────────────────────────────────────
-# Daily incremental % of total conversions that arrive on each day
-# after the click. Derived from conversion lag deep-dive report.
-# Buckets 14-21 and 21-30 are distributed evenly within the bucket.
+# Each entry is a 30-element list of CUMULATIVE % of conversion value
+# expected to have arrived by days_elapsed (index 0 = same day, 29 = day 29).
 #
-#   days_elapsed 0  = same-day conversions  (38.31%)
-#   days_elapsed 1  = conversions 1 day later (7.81%)
-#   ...
-#   days_elapsed 29 = last day of 30-day window
+# Source: Google Ads "Days to conversion" path metrics report, Q1 2026,
+# last-interaction attribution model, per-account, conversion value cumulative %.
 #
-_DAILY_INCREMENTS_PCT = [
-    38.31,          # day 0  (<1 day)
-     7.81,          # day 1  (1-2 days)
-     4.70,          # day 2  (2-3 days)
-     3.82,          # day 3  (3-4 days)
-     3.05,          # day 4  (4-5 days)
-     2.63,          # day 5  (5-6 days)
-     2.71,          # day 6  (6-7 days)
-     2.58,          # day 7  (7-8 days)
-     2.28,          # day 8  (8-9 days)
-     2.22,          # day 9  (9-10 days)
-     1.93,          # day 10 (10-11 days)
-     1.81,          # day 11 (11-12 days)
-     1.66,          # day 12 (12-13 days)
-     1.74,          # day 13 (13-14 days)
-    *([10.61 / 7] * 7),   # days 14-20  (14-21 day bucket, spread evenly)
-    *([12.14 / 9] * 9),   # days 21-29  (21-30 day bucket, spread evenly)
+# Granular data supplied for days 0-13 (individual day buckets).
+# Days 14-20 and 21-29 are linearly interpolated from the weekly bucket totals:
+#   - "14-21 days" bucket → cumulative at end of day 20
+#   - "21-30 days" bucket → cumulative at end of day 29 (= 100%)
+#
+ACCOUNT_LAG_PROFILES: dict[str, list[float]] = {
+    "Landal NL": [
+        #  d0     d1     d2     d3     d4     d5     d6     d7     d8     d9
+        42.00, 49.80, 54.50, 58.00, 61.10, 64.10, 67.00, 69.70, 71.50, 73.50,
+        # d10    d11    d12    d13   (d14-d20: interp 80.2→89.4)  (d21-d29: interp 89.4→100)
+        75.20, 76.90, 78.40, 80.20, 81.51, 82.83, 84.14, 85.46, 86.77, 88.09,
+        89.40, 90.58, 91.76, 92.93, 94.11, 95.29, 96.47, 97.64, 98.82, 100.00,
+    ],
+    "Roompot NL": [
+        44.30, 51.80, 56.10, 59.80, 62.70, 65.60, 68.40, 71.00, 73.00, 75.10,
+        # (d14-d20: interp 81.3→90.3)  (d21-d29: interp 90.3→100)
+        76.90, 78.30, 79.80, 81.30, 82.59, 83.87, 85.16, 86.44, 87.73, 89.01,
+        90.30, 91.38, 92.46, 93.53, 94.61, 95.69, 96.77, 97.84, 98.92, 100.00,
+    ],
+    "Landal DE": [
+        39.30, 47.90, 53.40, 57.20, 61.30, 64.40, 67.10, 70.10, 72.20, 74.10,
+        # (d14-d20: interp 81.4→90.9)  (d21-d29: interp 90.9→100)
+        76.00, 78.20, 79.90, 81.40, 82.76, 84.11, 85.47, 86.83, 88.19, 89.54,
+        90.90, 91.91, 92.92, 93.93, 94.94, 95.96, 96.97, 97.98, 98.99, 100.00,
+    ],
+    "Roompot DE": [
+        48.30, 56.70, 61.30, 64.90, 67.80, 70.90, 73.50, 76.10, 78.00, 79.30,
+        # (d14-d20: interp 85.2→92.5)  (d21-d29: interp 92.5→100)
+        80.60, 82.30, 83.90, 85.20, 86.24, 87.29, 88.33, 89.37, 90.41, 91.46,
+        92.50, 93.33, 94.17, 95.00, 95.83, 96.67, 97.50, 98.33, 99.17, 100.00,
+    ],
+    "Landal BE": [
+        40.80, 49.20, 53.70, 56.90, 60.00, 63.00, 65.90, 68.50, 70.70, 72.60,
+        # (d14-d20: interp 79.9→88.7)  (d21-d29: interp 88.7→100)
+        74.50, 76.70, 77.80, 79.90, 81.16, 82.41, 83.67, 84.93, 86.19, 87.44,
+        88.70, 89.96, 91.21, 92.47, 93.72, 94.98, 96.23, 97.49, 98.74, 100.00,
+    ],
+    "Roompot BE": [
+        47.00, 54.60, 58.20, 61.30, 65.10, 67.90, 70.70, 73.10, 75.00, 76.70,
+        # (d14-d20: interp 82.5→89.9)  (d21-d29: interp 89.9→100)
+        78.30, 79.90, 81.10, 82.50, 83.56, 84.61, 85.67, 86.73, 87.79, 88.84,
+        89.90, 91.02, 92.14, 93.27, 94.39, 95.51, 96.63, 97.76, 98.88, 100.00,
+    ],
+}
+
+# Portfolio average profile — fallback for any account not in ACCOUNT_LAG_PROFILES.
+# Computed as the mean of all 6 accounts at each day index.
+DEFAULT_LAG_PROFILE: list[float] = [
+    43.62, 51.67, 56.20, 59.68, 63.00, 65.98, 68.77, 71.42, 73.40, 75.22,
+    76.92, 78.72, 80.15, 81.75, 82.97, 84.19, 85.41, 86.63, 87.85, 89.06,
+    90.28, 91.36, 92.44, 93.52, 94.60, 95.68, 96.76, 97.84, 98.92, 100.00,
 ]
 
-# Build cumulative table: LAG_CUMULATIVE[d] = fraction of conversions
-# expected to have arrived after d days have elapsed (0.0 – 1.0).
-# Days >= 30 are fully settled → factor 1.0.
-_cumulative = np.cumsum(_DAILY_INCREMENTS_PCT) / 100.0
-LAG_CUMULATIVE = {d: min(float(_cumulative[d]), 1.0) for d in range(30)}
+
+def account_lag_factor(days_elapsed: int, account_name: str) -> float:
+    """
+    Return the lag multiplier for a specific account.
+
+    Looks up the account-specific cumulative arrival profile.
+    Falls back to the portfolio average for unknown accounts.
+
+    days_elapsed = (pull_date - click_date).days
+
+    Examples (Landal NL):
+      0 days → 42.0% arrived → multiply by 2.38
+      7 days → 69.7% arrived → multiply by 1.43
+     14 days → 81.5% arrived → multiply by 1.23
+     30+ days → 100% arrived → multiply by 1.00
+    """
+    if days_elapsed >= 30:
+        return 1.0
+    profile = ACCOUNT_LAG_PROFILES.get(account_name, DEFAULT_LAG_PROFILE)
+    cum_pct = profile[days_elapsed]
+    return 100.0 / cum_pct if cum_pct > 0 else 1.0
 
 
 def lag_factor(days_elapsed: int) -> float:
     """
-    Return the multiplier to apply to observed conversion_value so it
-    represents the estimated fully-settled total.
-
-    days_elapsed = (pull_date - click_date).days
-
-    Examples:
-      0 days → only 38.3% arrived → multiply by 2.61
-      7 days → 65.6% arrived      → multiply by 1.52
-     14 days → 78.8% arrived      → multiply by 1.27
-     30+ days → 100% arrived      → multiply by 1.00
+    Return the portfolio-average lag multiplier (backward-compatible wrapper).
+    Prefer account_lag_factor() for per-account accuracy.
     """
-    if days_elapsed >= 30:
-        return 1.0
-    cum = LAG_CUMULATIVE.get(days_elapsed, 1.0)
-    return 1.0 / cum if cum > 0 else 1.0
+    return account_lag_factor(days_elapsed, "")
 
 
 def apply_lag_correction(df: pd.DataFrame, pull_date: datetime) -> pd.DataFrame:
     """
     Add lag_factor, conversion_value_adj, and conversions_adj columns.
+
+    Uses per-account conversion arrival profiles from ACCOUNT_LAG_PROFILES.
     Spend and clicks are NOT adjusted (they are fully attributed same-day).
     """
     df = df.copy()
     df["date_dt"] = pd.to_datetime(df["date"])
     pull_day = pd.Timestamp(pull_date.date())
     df["days_elapsed"] = (pull_day - df["date_dt"]).dt.days
-    df["lag_factor"] = df["days_elapsed"].apply(lag_factor)
+    df["lag_factor"] = df.apply(
+        lambda row: account_lag_factor(int(row["days_elapsed"]), row["account_name"]),
+        axis=1,
+    )
     df["conversion_value_adj"] = df["conversion_value"] * df["lag_factor"]
     df["conversions_adj"]      = df["conversions"]      * df["lag_factor"]
     df.drop(columns=["date_dt"], inplace=True)
@@ -165,7 +206,10 @@ def build_query(start_date: str, end_date: str) -> str:
             metrics.conversions,
             metrics.conversions_value,
             metrics.clicks,
-            metrics.impressions
+            metrics.impressions,
+            metrics.search_impression_share,
+            metrics.search_budget_lost_impression_share,
+            metrics.search_rank_lost_impression_share
         FROM campaign
         WHERE segments.date BETWEEN '{start_date}' AND '{end_date}'
           AND campaign.advertising_channel_type = 'SEARCH'
@@ -216,6 +260,15 @@ def get_child_accounts(client: GoogleAdsClient, mcc_id: str) -> list[dict]:
 # PULL DATA FOR ONE ACCOUNT
 # ─────────────────────────────────────────────────────────────
 
+def _safe_is(val) -> float:
+    """Convert IS proto value to float, returning NaN if unavailable."""
+    try:
+        v = float(val)
+        return v if 0.0 <= v <= 1.0 else float('nan')
+    except (TypeError, ValueError):
+        return float('nan')
+
+
 def pull_account_data(
     client: GoogleAdsClient,
     account_id: str,
@@ -238,6 +291,9 @@ def pull_account_data(
                 "conversion_value":  row.metrics.conversions_value,
                 "clicks":            row.metrics.clicks,
                 "impressions":       row.metrics.impressions,
+                "search_impression_share":            _safe_is(row.metrics.search_impression_share),
+                "search_impression_share_lost_budget": _safe_is(row.metrics.search_budget_lost_impression_share),
+                "search_impression_share_lost_rank":  _safe_is(row.metrics.search_rank_lost_impression_share),
                 "currency":          row.customer.currency_code,
             })
     except GoogleAdsException as ex:
@@ -268,7 +324,7 @@ def main():
 
     print(f"Budget Solver — Data Pull")
     print(f"Date range : {start_str} to {end_str}  (24-month lookback, lag-corrected)")
-    print(f"Filters    : SEARCH campaigns only | excluding '| BR' and '| PK'")
+    print(f"Filters    : SEARCH campaigns only | excluding '| BR' and '| PK' | IS + CPC included")
     print()
 
     # Authenticate
@@ -318,6 +374,25 @@ def main():
         )
         .reset_index()
         .sort_values(["account_name", "date"])
+    )
+
+    # IS: impression-weighted mean (weighted by impressions per campaign-day)
+    for col in ['search_impression_share', 'search_impression_share_lost_budget', 'search_impression_share_lost_rank']:
+        if col in df.columns:
+            # Compute weighted IS at account+date level
+            df_is = (
+                df[df[col].notna() & (df['impressions'] > 0)]
+                .groupby(['account_id', 'account_name', 'date', 'currency'])
+                .apply(lambda g: np.average(g[col], weights=g['impressions']))
+                .reset_index(name=col)
+            )
+            df_daily = df_daily.merge(df_is, on=['account_id', 'account_name', 'date', 'currency'], how='left')
+
+    # CPC: derived from aggregated cost and clicks
+    df_daily['cpc'] = np.where(
+        df_daily['clicks'] > 0,
+        df_daily['cost'] / df_daily['clicks'],
+        float('nan')
     )
 
     # Remove any residual zero-spend rows post-aggregation
@@ -382,6 +457,82 @@ def main():
     print()
     print(f"Total rows : {len(df_daily):,} (filtered to {len(CORE_ACCOUNTS)} core markets)")
     print(f"Saved to   : {Path(OUTPUT_CSV).resolve()}")
+
+    # ── Keyword demand index ──────────────────────────────────
+    # Pull top-500 exact match keywords per account from generic campaigns,
+    # query Keyword Planner for 12-month historical search volumes, and build
+    # a per-account seasonal demand index. Saved alongside core_markets.csv
+    # so the optimizer can use it as the highest-priority demand signal.
+    # Fails gracefully: if Keyword Planner is unavailable the optimizer falls
+    # back to Google Trends → internal ROAS-derived index.
+    core_account_map = {
+        acc["name"]: acc["id"]
+        for acc in accounts
+        if acc["name"] in CORE_ACCOUNTS
+    }
+    first_mcc_id = list(CHILD_MCCS.keys())[0]
+    try:
+        from budget_solver.keyword_demand import (
+            pull_keyword_demand_index,
+            OUTPUT_DEMAND_CSV,
+            OUTPUT_KEYWORD_CSV,
+        )
+        demand_df, keyword_df = pull_keyword_demand_index(
+            client, core_account_map, mcc_id=first_mcc_id
+        )
+        if not demand_df.empty:
+            demand_df.to_csv(OUTPUT_DEMAND_CSV, index=False)
+            keyword_df.to_csv(OUTPUT_KEYWORD_CSV, index=False)
+            print(f"\nKeyword demand index saved: {OUTPUT_DEMAND_CSV.resolve()}")
+            print(f"Keyword list saved        : {OUTPUT_KEYWORD_CSV.resolve()}")
+        else:
+            print("\nWARNING: keyword demand index empty — optimizer will use fallback index.")
+    except Exception as exc:
+        print(f"\nWARNING: keyword demand index failed ({exc})")
+        print("         Optimizer will fall back to Google Trends / internal demand index.")
+
+    # ── Auction Insights ─────────────────────────────────────
+    # Pull trailing vs prior 30-day competitor impression share per account.
+    # Saved to output/auction_insights.csv and loaded by the optimizer at
+    # run time to display competitive pressure flags alongside recommendations.
+    print("\nPulling auction insights (competitor impression share)...")
+    try:
+        from budget_solver.auction_insights import (
+            pull_all_auction_insights,
+            OUTPUT_INSIGHTS_CSV,
+        )
+        insights_df = pull_all_auction_insights(client, core_account_map)
+        if not insights_df.empty:
+            insights_df.to_csv(OUTPUT_INSIGHTS_CSV, index=False)
+            print(f"Auction insights saved    : {OUTPUT_INSIGHTS_CSV.resolve()}")
+        else:
+            print("WARNING: auction insights returned no data.")
+    except Exception as exc:
+        print(f"WARNING: auction insights failed ({exc.__class__.__name__}: {exc})")
+        print("         Competitive pressure flags will be unavailable in optimizer output.")
+
+    # ── Bid Simulator ─────────────────────────────────────────
+    # Pull campaign-level BUDGET simulation points for all core accounts.
+    # Google's simulator predicts (spend → conversion_value) using its internal
+    # auction model — forward-looking vs our historically-fitted curves.
+    # Used at run time as a cross-check: large divergence (> 20%) flags that
+    # market conditions may have shifted or the model is extrapolating.
+    print("\nPulling bid simulator data...")
+    try:
+        from budget_solver.bid_simulator import (
+            pull_all_simulator_data,
+            OUTPUT_SIMULATOR_CSV,
+        )
+        sim_df = pull_all_simulator_data(client, core_account_map)
+        if not sim_df.empty:
+            sim_df.to_csv(OUTPUT_SIMULATOR_CSV, index=False)
+            print(f"Bid simulator data saved  : {OUTPUT_SIMULATOR_CSV.resolve()}")
+        else:
+            print("WARNING: bid simulator returned no data.")
+    except Exception as exc:
+        print(f"WARNING: bid simulator failed ({exc.__class__.__name__}: {exc})")
+        print("         Simulator cross-check will be unavailable in optimizer output.")
+
     print()
     print("Lag correction applied. 'conversion_value_adj' is the column used by optimizer")
     print("Next step  : budget-solver --budget <amount> --data output/core_markets.csv --scenarios")

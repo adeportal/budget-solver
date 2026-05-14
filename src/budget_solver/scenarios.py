@@ -16,7 +16,7 @@ from budget_solver.constants import (
     MIN_CHANGE_FOR_LABEL_EUR,
     BUDGET_SLACK_EPSILON
 )
-from budget_solver.mroas import instantaneous_mroas, discrete_mroas
+from budget_solver.mroas import instantaneous_mroas, discrete_mroas, breakeven_weekly_spend
 from budget_solver.solver import optimize_with_inequality_constraint
 from budget_solver.stability import apply_change_limit, phasing_warnings, detect_recent_churn
 
@@ -354,7 +354,8 @@ def scenario_d(
     predict_fns: dict,
     model_info: dict,
     min_mroas: float,
-    scenario_b: Scenario = None  # Phase 2 placeholder: used for discrete mROAS until C is implemented
+    scenario_b: Scenario = None,  # Phase 2 placeholder: used for discrete mROAS until C is implemented
+    max_monthly_spend: dict | None = None,
 ) -> Scenario:
     """
     Generate Scenario D: Maximum Justified Budget @ min_mroas Floor.
@@ -368,6 +369,7 @@ def scenario_d(
         model_info: Dict of account -> (fn, params, r2, model_name)
         min_mroas: Minimum instantaneous mROAS floor (typically 2.5x)
         scenario_b: Scenario B for discrete mROAS comparison (Phase 2 placeholder)
+        max_monthly_spend: Per-account monthly spend ceiling to cap breakeven for near-linear curves
 
     Returns:
         Scenario D with all accounts at breakeven spend
@@ -382,13 +384,9 @@ def scenario_d(
     for account in sorted(predict_fns.keys()):
         _, params, _, model_name = model_info[account]
 
-        # Breakeven calculation:
-        # - Curves fitted on WEEKLY spend → weekly revenue
-        # - Inst. mROAS at weekly spend w: a/w
-        # - Setting a/w = min_mroas gives: w = a/min_mroas (weekly breakeven)
-        # - Monthly breakeven = w × WEEKS_PER_MONTH
-        a = params[0]
-        weekly_breakeven = a / min_mroas
+        # Breakeven: solve inst. mROAS = min_mroas for weekly spend, then scale to monthly.
+        max_w = (max_monthly_spend[account] / WEEKS_PER_MONTH) if max_monthly_spend and account in max_monthly_spend else None
+        weekly_breakeven = _weekly_breakeven_spend(params, model_name, min_mroas, max_weekly=max_w)
         monthly_sp = weekly_breakeven * WEEKS_PER_MONTH
         daily_sp = monthly_sp / DAYS_PER_MONTH
 
@@ -454,7 +452,7 @@ def scenario_d(
 
     description = (
         f"Maximum justified budget at {min_mroas:.1f}x instantaneous mROAS floor. "
-        f"Every account pushed to its breakeven spend level (a/{min_mroas:.1f}). "
+        f"Every account pushed to its breakeven spend level (inst. mROAS = {min_mroas:.1f}x). "
         f"This defines the portfolio ceiling — the upper limit of justifiable investment. "
         f"Not a recommendation for immediate action, but useful for sensitivity planning."
     )
@@ -478,27 +476,35 @@ def scenario_d(
 # Scenario C Helper Functions
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _compute_breakevens(model_info: dict, min_mroas: float) -> dict:
+def _weekly_breakeven_spend(params, model_name, min_mroas, max_weekly=None):
+    return breakeven_weekly_spend(params, model_name, min_mroas, max_weekly=max_weekly)
+
+
+def _compute_breakevens(
+    model_info: dict,
+    min_mroas: float,
+    max_monthly: dict | None = None,
+) -> dict:
     """
     Compute breakeven monthly spend for all accounts.
 
     Breakeven = spend level where inst. mROAS = min_mroas floor.
-    Formula: weekly_breakeven = a / min_mroas, monthly = weekly × WEEKS_PER_MONTH
 
     Args:
         model_info: Dict[account] → (fn, params, r2, model_name)
         min_mroas: Minimum instantaneous mROAS floor
+        max_monthly: Optional per-account monthly spend ceiling (e.g. auto spend caps).
+                     Prevents power-curve breakevens from blowing up for near-linear fits.
 
     Returns:
         Dict[account] → monthly_breakeven_spend
     """
     breakevens = {}
     for account in sorted(model_info.keys()):
-        _, params, _, _ = model_info[account]
-        a = params[0]
-        weekly_breakeven = a / min_mroas
-        monthly_breakeven = weekly_breakeven * WEEKS_PER_MONTH
-        breakevens[account] = monthly_breakeven
+        _, params, _, model_name = model_info[account]
+        max_w = (max_monthly[account] / WEEKS_PER_MONTH) if max_monthly and account in max_monthly else None
+        weekly_breakeven = _weekly_breakeven_spend(params, model_name, min_mroas, max_weekly=max_w)
+        breakevens[account] = weekly_breakeven * WEEKS_PER_MONTH
     return breakevens
 
 
@@ -679,7 +685,8 @@ def scenario_c(
     scenario_b: Scenario,
     predict_fns: dict,
     model_info: dict,
-    min_mroas: float
+    min_mroas: float,
+    max_monthly_spend: dict | None = None,
 ) -> Scenario:
     """
     Generate Scenario C: Recommended (breakeven-capped reallocation).
@@ -698,7 +705,7 @@ def scenario_c(
         Scenario C or C1 with breakeven-capped allocations
     """
     # Compute breakevens for all accounts
-    breakevens = _compute_breakevens(model_info, min_mroas)
+    breakevens = _compute_breakevens(model_info, min_mroas, max_monthly=max_monthly_spend)
 
     # Build reference dict for Scenario B allocations
     b_allocs = {alloc.account: alloc for alloc in scenario_b.allocations}
@@ -850,6 +857,7 @@ def build_scenarios(
     max_account_changes: int = 2,
     wow_cap: float = 0.20,
     apply_stability: bool = True,
+    max_spend: dict | None = None,
 ) -> ScenarioSet:
     """
     Build complete scenario set (A, B, C, D) with optional stability rules.
@@ -873,7 +881,7 @@ def build_scenarios(
     # Generate base scenarios
     scen_a = scenario_a(df, predict_fns, model_info, min_mroas, baseline_window_days)
     scen_b = scenario_b(scen_a, target_budget, predict_fns, model_info, min_mroas)
-    scen_c_raw = scenario_c(scen_a, scen_b, predict_fns, model_info, min_mroas)
+    scen_c_raw = scenario_c(scen_a, scen_b, predict_fns, model_info, min_mroas, max_monthly_spend=max_spend)
 
     # Apply stability rules to C
     if apply_stability:
@@ -911,7 +919,7 @@ def build_scenarios(
         scen_c = scen_c_raw
 
     # Scenario D (all accounts at breakeven)
-    scen_d = scenario_d(predict_fns, model_info, min_mroas, scenario_b=scen_c)
+    scen_d = scenario_d(predict_fns, model_info, min_mroas, scenario_b=scen_c, max_monthly_spend=max_spend)
 
     return ScenarioSet(
         scenarios=[scen_a, scen_b, scen_c, scen_d],

@@ -12,7 +12,7 @@ from dataclasses import replace
 if TYPE_CHECKING:
     from budget_solver.scenarios import Scenario, AccountAllocation
 
-from budget_solver.mroas import discrete_mroas
+from budget_solver.mroas import discrete_mroas, breakeven_weekly_spend
 from budget_solver.constants import DAYS_PER_MONTH
 
 
@@ -69,11 +69,9 @@ def apply_change_limit(
     from budget_solver.constants import WEEKS_PER_MONTH
     breakevens = {}
     for account in c_allocs.keys():
-        _, params, _, _ = model_info[account]
-        a = params[0]
-        weekly_breakeven = a / min_mroas
-        monthly_breakeven = weekly_breakeven * WEEKS_PER_MONTH
-        breakevens[account] = monthly_breakeven
+        _, params, _, model_name = model_info[account]
+        weekly_breakeven = breakeven_weekly_spend(params, model_name, min_mroas)
+        breakevens[account] = weekly_breakeven * WEEKS_PER_MONTH
 
     # Categorize moves into mandatory (floor-enforced caps) vs optional (reallocations)
     mandatory_moves = []
@@ -183,11 +181,9 @@ def apply_change_limit(
         breakevens = {}
         for move in kept_moves:
             account = move['account']
-            _, params, _, _ = model_info[account]
-            a = params[0]
-            weekly_breakeven = a / min_mroas
-            monthly_breakeven = weekly_breakeven * WEEKS_PER_MONTH
-            breakevens[account] = monthly_breakeven
+            _, params, _, model_name = model_info[account]
+            weekly_breakeven = breakeven_weekly_spend(params, model_name, min_mroas)
+            breakevens[account] = weekly_breakeven * WEEKS_PER_MONTH
 
         # Try to redistribute proportionally
         if budget_discrepancy > 0:

@@ -6,6 +6,7 @@ from contextlib import contextmanager
 
 import numpy as np
 from scipy.optimize import curve_fit
+from scipy.optimize import minimize as _scipy_minimize
 
 from budget_solver.constants import POWER_B_MIN, POWER_B_MAX
 
@@ -59,6 +60,169 @@ def make_safe_predictor(raw_predict_fn, min_observed_spend, anchor_revenue):
         return float(result[0]) if scalar_input else result
 
     return safe_predict
+
+
+def _fit_log_robust(spend: np.ndarray, revenue: np.ndarray):
+    """
+    Fit log curve revenue = a*ln(spend) + b using Huber loss minimisation.
+
+    Huber loss is quadratic for small residuals and linear for large ones,
+    making the fit less sensitive to outlier weeks that survived outlier removal.
+    Delta is set adaptively from the MAD of OLS residuals.
+
+    Returns (params, r_squared) where params = [a, b].
+    """
+    # OLS initial guess via curve_fit (fast, used only to seed Huber)
+    try:
+        with suppress_curve_fit_warnings():
+            p0, _ = curve_fit(log_curve, spend, revenue,
+                              p0=[revenue.mean(), 0.0], maxfev=5000)
+        if p0[0] <= 0:
+            raise ValueError("negative slope in OLS seed")
+    except Exception:
+        # Fallback seed: slope = mean(revenue) / mean(log(spend))
+        log_mean = float(np.log(np.maximum(spend.mean(), 1e-9)))
+        p0 = np.array([revenue.mean() / max(log_mean, 1e-9), 0.0])
+
+    # Adaptive Huber delta: 1.35 × MAD of OLS residuals (minimum = 1% of revenue range)
+    ols_resid = revenue - log_curve(spend, *p0)
+    mad = float(np.median(np.abs(ols_resid - np.median(ols_resid))))
+    delta = max(1.35 * mad, 0.01 * float(revenue.ptp() or revenue.mean()))
+
+    def huber_obj(params):
+        r = revenue - log_curve(spend, *params)
+        return float(np.sum(np.where(
+            np.abs(r) <= delta,
+            0.5 * r ** 2,
+            delta * (np.abs(r) - 0.5 * delta)
+        )))
+
+    res = _scipy_minimize(
+        huber_obj, p0,
+        method='Nelder-Mead',
+        options={'maxiter': 20000, 'xatol': 1e-7, 'fatol': 1e-7, 'adaptive': True}
+    )
+    params = res.x if (res.success and res.x[0] > 0) else p0
+
+    # R² uses standard OLS formula (diagnostic, not part of fitting)
+    ss_res = float(np.sum((revenue - log_curve(spend, *params)) ** 2))
+    ss_tot = float(np.sum((revenue - revenue.mean()) ** 2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
+
+    return params, r2
+
+
+def fit_two_stage_curves(account_data: dict, preferred_model: str = 'log') -> dict:
+    """
+    Fit two-stage spend → clicks → revenue curves.
+
+    Stage 1: clicks = g(spend)  — log or power curve on weekly spend/clicks data
+    Stage 2: revenue = clicks × revenue_per_click  — rpc is a scalar from training data
+
+    Portfolio-wide curve family consistency is enforced (same rule as fit_portfolio_curves).
+    The returned params are EQUIVALENT REVENUE CURVE params so that all downstream
+    mROAS and breakeven calculations work without modification:
+        log:   a_r = a_clicks × rpc,  b_r = b_clicks × rpc   →  mROAS = a_r / spend
+        power: a_r = a_clicks × rpc,  b_r = b_clicks          →  exponent unchanged
+
+    R² is computed on revenue (not clicks) for fair comparison with single-stage fits.
+    model_name is suffixed with '+2stage' so callers can identify the fit type.
+
+    Why separate the two stages?
+      CPCs rise as spend increases (Smart Bidding pushes into pricier auctions), so the
+      spend→clicks relationship captures diminishing click efficiency independently from
+      click quality (CVR × AOV). This makes the model more robust when CPC is changing
+      or when spend is pushed outside the historical range.
+    """
+    # ── Stage 1: fit clicks curves per account ───────────────
+    clicks_results = {}
+    failed_accounts = []
+
+    for account, data in account_data.items():
+        clicks = data.get('clicks', np.array([]))
+        spend  = data['spend']
+
+        # Filter valid rows: positive spend and non-negative clicks
+        mask   = (spend > 0) & (clicks >= 0)
+        sp_c   = spend[mask]
+        cl_c   = clicks[mask]
+
+        if len(sp_c) < 3 or cl_c.sum() == 0:
+            clicks_results[account] = None  # insufficient data
+            failed_accounts.append(account)
+            continue
+
+        fn, params, _, name = fit_response_curve(sp_c, cl_c, force_model=preferred_model)
+        if name == 'linear_fallback':
+            failed_accounts.append(account)
+        clicks_results[account] = (fn, params, name, sp_c, cl_c)
+
+    # ── Enforce portfolio-wide curve family consistency ──────
+    if failed_accounts and preferred_model == 'log':
+        print(f"  [2-stage] Log fit failed for {', '.join(failed_accounts)}. "
+              f"Refitting all accounts with power curve.")
+        for account, data in account_data.items():
+            clicks = data.get('clicks', np.array([]))
+            spend  = data['spend']
+            mask   = (spend > 0) & (clicks >= 0)
+            sp_c, cl_c = spend[mask], clicks[mask]
+            if len(sp_c) < 3 or cl_c.sum() == 0:
+                clicks_results[account] = None
+                continue
+            fn, params, _, name = fit_response_curve(sp_c, cl_c, force_model='power')
+            clicks_results[account] = (fn, params, name, sp_c, cl_c)
+
+    # ── Stage 2: compute revenue_per_click + build combined predict_fn ──
+    results = {}
+    for account, data in account_data.items():
+        clicks  = data.get('clicks', np.array([]))
+        spend   = data['spend']
+        revenue = data['revenue']
+
+        cr = clicks_results.get(account)
+        if cr is None:
+            # Fall back to single-stage for this account
+            fn, params, r2, name = fit_response_curve(spend, revenue)
+            results[account] = (fn, params, r2, name)
+            continue
+
+        clicks_fn, clicks_params, clicks_model, sp_c, cl_c = cr
+
+        # Revenue per click from training data (total revenue / total clicks)
+        total_clicks  = float(np.sum(clicks[clicks > 0]))
+        total_revenue = float(np.sum(revenue[clicks > 0]))
+        rpc = total_revenue / total_clicks if total_clicks > 0 else 1.0
+
+        # Equivalent revenue curve params (so mROAS formulas work unchanged)
+        if clicks_model == 'log':
+            a_r = clicks_params[0] * rpc
+            b_r = clicks_params[1] * rpc
+            equiv_params = [a_r, b_r]
+        elif clicks_model == 'power':
+            a_r = clicks_params[0] * rpc
+            b_r = clicks_params[1]           # exponent is dimensionless
+            equiv_params = [a_r, b_r]
+        else:
+            # linear_fallback: clicks = avg_ctr × spend → revenue = avg_ctr × rpc × spend
+            equiv_params = [clicks_params[0] * rpc, 1.0]
+
+        # Combined predict function
+        raw_predict = lambda x, fn=clicks_fn, r=rpc: fn(x) * r
+        min_sp = float(sp_c.min()) if len(sp_c) else 0.0
+        anchor = float(max(raw_predict(min_sp), 0.0)) if len(sp_c) else 0.0
+        predict_fn = make_safe_predictor(raw_predict, min_sp, anchor)
+
+        # R² on revenue for fair comparison with single-stage
+        rev_mask  = (spend > 0) & (revenue >= 0)
+        rev_pred  = np.array([predict_fn(s) for s in spend[rev_mask]])
+        rev_true  = revenue[rev_mask]
+        ss_res = float(np.sum((rev_true - rev_pred) ** 2))
+        ss_tot = float(np.sum((rev_true - rev_true.mean()) ** 2))
+        r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
+
+        results[account] = (predict_fn, equiv_params, r2, f'{clicks_model}+2stage')
+
+    return results
 
 
 def fit_portfolio_curves(account_data: dict, preferred_model: str = 'log') -> dict:
@@ -171,10 +335,8 @@ def fit_response_curve(spend_arr, revenue_arr, force_model: str | None = None):
     # ── Primary: log curve revenue = a * ln(spend) + b ───────
     if force_model is None or force_model == 'log':
         try:
-            with suppress_curve_fit_warnings():
-                params, _ = curve_fit(log_curve, spend, revenue, p0=[revenue.mean(), 0], maxfev=10000)
+            params, r2 = _fit_log_robust(spend, revenue)
             if params[0] > 0:  # positive slope required
-                r2 = r_squared(revenue, log_curve(spend, *params))
                 chosen = {'r2': r2, 'model': log_curve, 'params': params, 'name': 'log'}
         except Exception:
             pass

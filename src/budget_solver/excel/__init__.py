@@ -16,6 +16,8 @@ from budget_solver.excel.styling import _hdr, _fmt_col, _border, sanitize_displa
 from budget_solver.narrative import full_scenario_narrative
 from budget_solver.excel.builders import _build_overview, _build_scenario_sheet
 from budget_solver.excel.phase6b import _build_extended_budget, _build_curve_diagnostics, _build_outlier_log, _build_demand_index
+from budget_solver.excel.diagnostics import _build_model_accuracy, _build_cpc_diagnostics
+from budget_solver.excel.market_intelligence import _build_market_intelligence
 
 
 def build_excel(
@@ -32,6 +34,15 @@ def build_excel(
     actual_window_label: str = 'Last 30 days',
     actual_window_detail: str = None,
     extended_budget_steps: int = 6,
+    accuracy_df: pd.DataFrame = None,
+    is_ltb_trailing: dict = None,
+    holiday_corrections: dict = None,
+    weather_corrections: dict = None,
+    cal_confidence: dict = None,
+    calibration_factors: dict = None,
+    auction_insights_df: pd.DataFrame = None,
+    simulator_df: pd.DataFrame = None,
+    current_alloc: dict = None,
 ):
     """
     Build multi-scenario Excel report.
@@ -50,6 +61,13 @@ def build_excel(
         actual_window_label: Label for actual baseline window
         actual_window_detail: Detailed description of actual window
         extended_budget_steps: Number of rows in Extended Budget sweep
+        holiday_corrections: {acc: (factor, explanation)} from holiday_calendar
+        weather_corrections: {acc: (factor, explanation)} from weather module
+        cal_confidence: {acc: confidence_float} from calibration block
+        calibration_factors: {acc: scale_float} applied to predict_fns
+        auction_insights_df: DataFrame from auction_insights.load_auction_insights()
+        simulator_df: DataFrame from bid_simulator.load_simulator_data()
+        current_alloc: {acc: monthly_spend} actual trailing spend
 
     Returns:
         output_path
@@ -67,8 +85,16 @@ def build_excel(
     min_mroas = scenario_set.min_mroas
 
     # Build sheets
-    _build_executive_summary(wb, scenario_set, forecast_label, actual_window_label)
-    _build_overview(wb, scenario_set)
+    _build_executive_summary(wb, scenario_set, forecast_label, actual_window_label,
+                              holiday_corrections=holiday_corrections,
+                              weather_corrections=weather_corrections,
+                              calibration_factors=calibration_factors,
+                              cal_confidence=cal_confidence)
+    _build_overview(wb, scenario_set,
+                    holiday_corrections=holiday_corrections,
+                    weather_corrections=weather_corrections,
+                    calibration_factors=calibration_factors,
+                    cal_confidence=cal_confidence)
     _build_scenario_sheet(wb, scen_a, None, min_mroas, "A")
     _build_scenario_sheet(wb, scen_b, scen_a, min_mroas, "B")
     _build_scenario_sheet(wb, scen_c, scen_b, min_mroas, "C")
@@ -78,12 +104,36 @@ def build_excel(
     _build_curve_diagnostics(wb, scenario_set, model_info, account_data)
     _build_outlier_log(wb, removal_log if removal_log else [])
     _build_demand_index(wb, demand_index if demand_index else {}, demand_normalized, forecast_week if forecast_week else 1, forecast_label)
+    if accuracy_df is not None and not (hasattr(accuracy_df, 'empty') and accuracy_df.empty):
+        _build_model_accuracy(wb, accuracy_df)
+    if 'cpc' in df.columns:
+        _build_cpc_diagnostics(wb, df, scenario_set)
+
+    # Market Intelligence sheet — always built; sections degrade gracefully when data absent
+    scen_c = scenarios[2]
+    rec_alloc = {a.account: a.monthly_spend for a in scen_c.allocations}
+    _build_market_intelligence(
+        wb,
+        forecast_label=forecast_label,
+        accounts=list(scenario_set.predict_fns.keys()),
+        holiday_corrections=holiday_corrections or {},
+        weather_corrections=weather_corrections or {},
+        cal_confidence=cal_confidence or {},
+        calibration_factors=calibration_factors or {},
+        auction_insights_df=auction_insights_df if auction_insights_df is not None else pd.DataFrame(),
+        simulator_df=simulator_df if simulator_df is not None else pd.DataFrame(),
+        predict_fns=scenario_set.predict_fns,
+        current_alloc=current_alloc or {},
+        recommended_alloc=rec_alloc,
+    )
 
     wb.save(output_path)
     return output_path
 
 
-def _build_executive_summary(wb, scenario_set, forecast_label, actual_window_label):
+def _build_executive_summary(wb, scenario_set, forecast_label, actual_window_label,
+                              holiday_corrections=None, weather_corrections=None,
+                              calibration_factors=None, cal_confidence=None):
     """
     Build Executive Summary sheet — single-page brief for stakeholders.
 
@@ -177,6 +227,58 @@ def _build_executive_summary(wb, scenario_set, forecast_label, actual_window_lab
         row += 1
 
     row += 1
+
+    # ── Applied Corrections (inline summary) ──────────────────
+    hc = holiday_corrections or {}
+    wc = weather_corrections or {}
+    cf = calibration_factors or {}
+    cc = cal_confidence or {}
+    if hc or wc:
+        ws.cell(row=row, column=1, value='APPLIED FORECAST CORRECTIONS')
+        ws.cell(row=row, column=1).font = Font(bold=True, size=10, name='Calibri', color=NAV)
+        row += 1
+
+        corr_hdrs = ['Account', 'Holiday ×', 'Weather ×', 'Combined ×', 'Cal. factor', 'Confidence']
+        for c, h in enumerate(corr_hdrs, 1):
+            cell = ws.cell(row=row, column=c, value=h)
+            cell.font = Font(bold=True, size=9, name='Calibri', color='FFFFFF')
+            cell.fill = PatternFill('solid', fgColor='2E75B6')
+            cell.alignment = Alignment(horizontal='center')
+        row += 1
+
+        accounts = sorted(set(list(hc.keys()) + list(wc.keys())))
+        for i, acc in enumerate(accounts):
+            h_fac = hc.get(acc, (1.0, ''))[0]
+            w_fac = wc.get(acc, (1.0, ''))[0]
+            combined = h_fac * w_fac
+            cal_fac  = cf.get(acc, 1.0)
+            conf     = cc.get(acc, 1.0)
+            row_fill = PatternFill('solid', fgColor='EBF3FB') if i % 2 == 0 else PatternFill('solid', fgColor='FFFFFF')
+
+            def _corr_cell(col, val, fmt=None, bold=False):
+                c = ws.cell(row=row, column=col, value=val)
+                c.font = Font(name='Calibri', size=9, bold=bold)
+                c.fill = row_fill
+                c.alignment = Alignment(horizontal='center' if col > 1 else 'left')
+                if fmt: c.number_format = fmt
+                return c
+
+            _corr_cell(1, acc)
+            _corr_cell(2, round(h_fac, 3),   '0.00"×"')
+            _corr_cell(3, round(w_fac, 3),    '0.00"×"')
+            _corr_cell(4, round(combined, 3), '0.00"×"', bold=True)
+            _corr_cell(5, round(cal_fac, 3),  '0.000"×"')
+            _corr_cell(6, round(conf, 2),     '0%')
+            row += 1
+
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=6)
+        note = ws.cell(row=row, column=1,
+                       value='Combined × = holiday × weather. Applied to every spend→revenue prediction. '
+                             'See Market Intelligence sheet for full detail and competitive landscape.')
+        note.font = Font(name='Calibri', size=8, italic=True, color='888888')
+        note.alignment = Alignment(wrap_text=True)
+        ws.row_dimensions[row].height = 22
+        row += 2
 
     # ── Methodology section ──
     ws.cell(row=row, column=1, value='APPROACH & METHODOLOGY')

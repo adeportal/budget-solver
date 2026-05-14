@@ -8,3 +8,4 @@ numpy>=1.24
 pandas>=2.0
 openpyxl>=3.1
 requests>=2.31
+pytrends>=4.9.0

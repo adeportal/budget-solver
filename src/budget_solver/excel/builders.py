@@ -9,7 +9,8 @@ from budget_solver.excel.styling import _hdr, _fmt_col, _border
 from budget_solver.narrative import full_scenario_narrative
 
 
-def _build_overview(wb, scenario_set):
+def _build_overview(wb, scenario_set, holiday_corrections=None, weather_corrections=None,
+                    calibration_factors=None, cal_confidence=None):
     """
     Build Overview sheet — side-by-side table comparing all scenarios.
 
@@ -311,6 +312,54 @@ def _build_overview(wb, scenario_set):
         cell.font = Font(size=8, name='Calibri', color='666666')
         # cell.fill = PatternFill(start_color=color, end_color=color, fill_type='solid')
         row += 1
+
+    # ── Applied Corrections ───────────────────────────────────
+    hc = holiday_corrections or {}
+    wc = weather_corrections or {}
+    cf = calibration_factors or {}
+    cc = cal_confidence or {}
+    if hc or wc:
+        row += 1
+        cell = ws.cell(row=row, column=1, value='APPLIED FORECAST CORRECTIONS')
+        cell.font = Font(bold=True, size=10, name='Calibri', color=NAV)
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=5)
+        row += 1
+
+        corr_hdrs = ['Account', 'Holiday ×', 'Weather ×', 'Combined ×', 'Cal. / Conf.']
+        for c, h in enumerate(corr_hdrs, 1):
+            cell = ws.cell(row=row, column=c, value=h)
+            cell.font = Font(bold=True, size=9, name='Calibri', color='FFFFFF')
+            cell.fill = PatternFill('solid', fgColor='2E75B6')
+            cell.alignment = Alignment(horizontal='center')
+        row += 1
+
+        accounts = sorted(set(list(hc.keys()) + list(wc.keys())))
+        for i, acc in enumerate(accounts):
+            h_fac    = hc.get(acc, (1.0, ''))[0]
+            w_fac    = wc.get(acc, (1.0, ''))[0]
+            combined = h_fac * w_fac
+            cal_fac  = cf.get(acc, 1.0)
+            conf     = cc.get(acc, 1.0)
+            alt      = PatternFill('solid', fgColor=LBLU) if i % 2 == 0 else PatternFill('solid', fgColor=WHIT)
+
+            ws.cell(row=row, column=1, value=acc).font = Font(name='Calibri', size=9)
+            ws.cell(row=row, column=1).fill = alt
+
+            for col, val, fmt in [
+                (2, round(h_fac, 3),    '0.00"×"'),
+                (3, round(w_fac, 3),    '0.00"×"'),
+                (4, round(combined, 3), '0.00"×"'),
+            ]:
+                c2 = ws.cell(row=row, column=col, value=val)
+                c2.font = Font(name='Calibri', size=9, bold=(col == 4))
+                c2.fill = alt
+                c2.number_format = fmt
+                c2.alignment = Alignment(horizontal='center')
+
+            ws.cell(row=row, column=5, value=f'×{cal_fac:.3f}  ({conf:.0%} conf)').font = Font(name='Calibri', size=9)
+            ws.cell(row=row, column=5).fill = alt
+            ws.cell(row=row, column=5).alignment = Alignment(horizontal='center')
+            row += 1
 
     # Set column widths
     ws.column_dimensions['A'].width = 32
