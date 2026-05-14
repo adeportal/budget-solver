@@ -43,8 +43,8 @@ _FORECAST_URL     = "https://api.open-meteo.com/v1/forecast"
 _ARCHIVE_URL      = "https://archive-api.open-meteo.com/v1/archive"
 _TIMEOUT          = 10       # seconds per HTTP request
 _HIST_YEARS       = [2023, 2024, 2025]
-_MULT_LO          = 0.80
-_MULT_HI          = 1.20
+_MULT_LO          = 0.90   # back-tested: ±20% caused systematic over-prediction
+_MULT_HI          = 1.10   # sunshine hours correlate with bookings but effect is modest
 _LOOKAHEAD_DAYS   = 30       # skip correction if month starts more than this far ahead
 _ARCHIVE_LAG_DAYS = 2        # ERA5 archive typically lags ~2 days behind today
 

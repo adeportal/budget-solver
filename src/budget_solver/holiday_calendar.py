@@ -303,8 +303,8 @@ def holiday_days(country: str, year: int, month: int) -> int:
 # CORRECTION FACTOR
 # ─────────────────────────────────────────────────────────────
 
-_CORRECTION_FLOOR = 0.6
-_CORRECTION_CAP   = 1.8
+_CORRECTION_FLOOR = 0.80   # back-tested: ±60% caused systematic over-prediction
+_CORRECTION_CAP   = 1.20   # Easter timing shifts rarely move revenue more than ±20%
 
 
 def compute_holiday_corrections(
