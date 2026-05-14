@@ -131,7 +131,7 @@ print('Refresh token:', creds.refresh_token)
 budget-solver-pull
 
 # 2. Generate scenarios for next month
-budget-solver --budget 1231200 --scenarios --forecast-month 2026-06
+budget-solver --budget 1231200 --forecast-month 2026-06
 
 # 3. Review output/budget_solver_YYYYMMDD_HHMM.xlsx
 #    Start with Executive Summary, then Scenario C, then Market Intelligence
@@ -146,16 +146,17 @@ budget-solver --budget 1231200 --scenarios --forecast-month 2026-06
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--budget` | *required* | Total monthly budget (EUR) |
-| `--scenarios` | on | Generate 4-scenario A/B/C/D report |
-| `--min-mroas` | 2.5 | Minimum instantaneous mROAS floor |
-| `--training-months` | 6 | Months of history used for curve fitting |
 | `--forecast-month YYYY-MM` | inferred | Month to forecast |
-| `--forecast-week 1-53` | inferred | ISO week for demand scaling |
+| `--forecast-week 1-53` | inferred | ISO week for demand scaling (mutually exclusive with `--forecast-month`) |
+| `--training-months` | 6 | Months of history used for curve fitting |
+| `--min-mroas` | 2.5 | Minimum instantaneous mROAS floor |
+| `--data PATH` | `output/core_markets.csv` | Input CSV path — useful for backtesting on a filtered dataset |
+| `--output PATH` | auto timestamped | Output Excel file path |
 
 ### Spend constraints
 
 ```bash
-budget-solver --budget 1231200 --scenarios \
+budget-solver --budget 1231200 \
   --min "Landal BE:500,Roompot NL:1000" \
   --max "Landal DE:20000"
 ```
@@ -166,7 +167,7 @@ budget-solver --budget 1231200 --scenarios \
 |------|---------|-------------|
 | `--max-account-changes` | 0 (all) | Limit optional moves to top-N by move value |
 | `--wow-cap` | 0.20 | Max week-over-week spend change per account |
-| `--no-apply-stability` | off | Disable stability rules entirely |
+| `--no-stability-rules` | off | Disable stability rules entirely |
 
 ### Model controls
 
@@ -177,25 +178,34 @@ budget-solver --budget 1231200 --scenarios \
 | `--no-calibrate` | off | Skip trailing ROAS calibration (diagnostics) |
 | `--no-outlier-removal` | off | Skip outlier filter |
 | `--demand-index-csv path` | auto | Override demand index with external CSV |
+| `--training-months-override` | — | Per-account overrides e.g. `"Landal BE:12,Landal DE:9"` |
+| `--target` | `conversion_value` | Metric to optimise (`conversion_value` or `conversions`) |
+| `--baseline-window` | 7 | Days used for Scenario A current run rate |
 
 ### Common examples
 
 ```bash
 # Standard monthly run
-budget-solver --budget 1231200 --scenarios --forecast-month 2026-06
+budget-solver --budget 1231200 --forecast-month 2026-06
 
 # With floor constraints
-budget-solver --budget 1231200 --scenarios \
+budget-solver --budget 1231200 \
   --min "Landal BE:30000" --max "Landal DE:150000"
 
 # Wider training window (more stable curves)
-budget-solver --budget 1231200 --scenarios --training-months 12
+budget-solver --budget 1231200 --training-months 12
 
 # Diagnostic: see raw curves before calibration
-budget-solver --budget 1231200 --scenarios --no-calibrate
+budget-solver --budget 1231200 --no-calibrate
 
 # Two-stage model (separates CPC efficiency from conversion quality)
-budget-solver --budget 1231200 --scenarios --two-stage
+budget-solver --budget 1231200 --two-stage
+
+# Backtest on a historical dataset (lock spend to actuals via --min/--max)
+budget-solver --budget 787081 --data output/core_markets_pre_apr.csv \
+  --forecast-month 2026-04 \
+  --min "Landal NL:335594,Roompot NL:195000,Landal DE:161946,Roompot DE:37024,Landal BE:30505,Roompot BE:27012" \
+  --max "Landal NL:335594,Roompot NL:195000,Landal DE:161946,Roompot DE:37024,Landal BE:30505,Roompot BE:27012"
 ```
 
 ---
@@ -230,7 +240,6 @@ raw_curve(weekly_spend)
   × WEEKS_PER_MONTH                 ← monthly scale conversion
   × extrapolation_damping           ← discount beyond observed max spend
   × calibration_factor              ← confidence-weighted trailing ROAS anchor
-  × bias_correction                 ← systematic over/under-prediction from accuracy log
 ```
 
 Each signal is described below.
@@ -245,13 +254,13 @@ Converts monthly search volumes → ISO week 1-53 multipliers, normalized to mea
 
 **Source:** Hardcoded 5-year calendar (2024–2028) for NL, DE, BE school holidays and public holidays including Easter-derived moveable feasts.
 
-Counts holiday days in the forecast month vs the 2024–2025 average baked into the response curves. Returns a per-account correction factor (e.g., April 2026 with Easter gets ×1.52 for NL). Capped [0.60, 1.80]. Always applied — Easter timing shifts are among the most common causes of forecast error.
+Counts holiday days in the forecast month vs the 2024–2025 average baked into the response curves. Returns a per-account correction factor (e.g., April 2026 with Easter gets ×1.20 for NL). Capped [0.80, 1.20]. Always applied — Easter timing shifts are among the most common causes of forecast error. Caps were tightened from [0.60, 1.80] after April 2026 backtesting showed the wider range caused systematic over-prediction.
 
 #### Weather correction
 
 **Source:** Open-Meteo API (free, no API key required).
 
-Compares forecast-month sunshine hours (from the 16-day forecast API + ERA5 archive for elapsed days) to the historical average for the same calendar month across 2023–2025. Sunshine hours are the strongest single predictor of outdoor leisure booking intent. Capped [0.80, 1.20]. Only activates within 30 days of the forecast month — beyond that, weather forecasts are unreliable and the factor returns 1.0.
+Compares forecast-month sunshine hours (from the 16-day forecast API + ERA5 archive for elapsed days) to the historical average for the same calendar month across 2023–2025. Sunshine hours are the strongest single predictor of outdoor leisure booking intent. Capped [0.90, 1.10]. Only activates within 30 days of the forecast month — beyond that, weather forecasts are unreliable and the factor returns 1.0. Caps were tightened from [0.80, 1.20] after April 2026 backtesting.
 
 #### Extrapolation dampening
 
@@ -263,19 +272,30 @@ At 1.5× max observed: only 37% of incremental revenue survives. At 2×: 14%. Th
 
 #### Confidence-weighted calibration
 
-After fitting, each curve is anchored to the account's trailing 14-day lag-adjusted ROAS. The blend weight is scaled by a confidence score:
+After fitting, each curve is anchored to the account's trailing **30-day lag-adjusted ROAS** (`actual_roas`). The blend weight is scaled by a confidence score derived from the trailing 14-day window:
 
 `confidence = active_ratio × (1 − min(CV_of_daily_ROAS, 1.0))`
-`blend = 0.25 × confidence`
+`blend = 0.40 × confidence`
 
-- **active_ratio:** fraction of window days with positive spend (campaign paused = 0)
+- **active_ratio:** fraction of 14-day window days with positive spend (campaign paused = 0)
 - **CV:** coefficient of variation of daily ROAS (volatile window = low confidence)
+- **ROAS anchor:** lag-adjusted 30-day figure — more stable than raw 14-day which undershoots due to attribution lag
 
 When confidence → 0 (paused campaigns, noisy window), the calibration factor collapses to 1.0 — the fitted curve stands on its own rather than anchoring to bad data. Calibration is capped at [0.70, 1.30] regardless.
 
-#### Bias correction
+**Backtest note:** April 2026 walk-forward validation showed that uncalibrated curves (blend = 0) were nearly as accurate as calibrated ones (−0.03% portfolio error). High blend (0.75) over-anchored to the trailing ROAS and degraded accuracy when forecast-period spend differed significantly from the calibration anchor. 0.40 is a conservative touch that corrects absolute level without overfitting to the trailing window.
 
-On each run, the recommended allocation and predicted revenue are saved to `output/prediction_log.csv`. When actuals arrive the following month, prediction errors are scored. If a model has systematically over- or under-predicted for the last 2+ months, a correction factor (capped ±20%) is applied automatically.
+#### Prediction accuracy diagnostic
+
+On each run, the recommended allocation and predicted revenue are saved to `output/prediction_log.csv`. After calibration, the model also compares calibrated predictions against the last 3 complete settled months (months that ended ≥ 30 days before the latest data date, so attribution lag is fully resolved).
+
+```
+Model accuracy vs settled months (calibrated predictions / actual):
+  Landal NL     ok     geo=0.979x  [0.91x, 1.07x, 0.96x]
+  Roompot DE  ⚠ under  geo=0.630x  [0.90x, 0.76x, 0.37x]
+```
+
+This is **diagnostic only** — no automatic correction is applied. Backtesting showed that flat multipliers degrade rather than improve accuracy because the prediction/actual ratio is spend-level dependent: a bias measured at Q1 spend levels does not generalise to different spring spend levels. Use the diagnostic to sanity-check the forecast direction before presenting to stakeholders.
 
 ### 4. Optimization
 
@@ -363,7 +383,7 @@ Always-on comparison of trailing 30-day CPC vs training-period CPC per account. 
 
 3. **Bid strategy translation:** The optimizer outputs monthly spend targets. In Google Ads you implement these as daily budget caps and/or tROAS/tCPA adjustments. Large changes (> 20% budget) should be phased over 2–4 weeks to allow Smart Bidding to adapt.
 
-4. **Calibration window risk:** If the trailing 14 days are unrepresentative (paused campaigns, promo spike, tracking outage), the confidence-weighted calibration suppresses the anchor — but the confidence score will show low in the Market Intelligence sheet. Run with `--no-calibrate` to compare.
+4. **Calibration window risk:** The ROAS anchor uses the trailing 30-day lag-adjusted figure; the confidence signal uses 14-day activity and volatility. If either window is unrepresentative (paused campaigns, promo spike, tracking outage), the confidence score will show low in the Market Intelligence sheet and the calibration blend collapses toward zero. Run with `--no-calibrate` to compare raw vs calibrated predictions. Walk-forward backtesting (Jan–Apr 2026) showed ±9% typical portfolio error in stable months, up to ±42% in months immediately following a high-ROAS outlier month — the accuracy diagnostic printed each run helps catch this before presenting to stakeholders.
 
 5. **Weather / holiday corrections:** Both are based on demand proxies (sunshine hours, calendar days). They capture the expected effect of external conditions on booking intent but not one-off events (a viral social post, a major competitor sale). Use your own judgement when market conditions are unusual.
 
