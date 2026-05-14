@@ -347,9 +347,11 @@ def compute_holiday_corrections(
 
         avg_hist = sum(hist_days) / len(hist_days)
 
-        if avg_hist == 0 and forecast_days == 0:
+        if avg_hist < 2 and forecast_days < 2:
+            # Both forecast and history have negligible holiday density (< 2 days).
+            # The signal is too thin to correct on — noise would dominate.
             factor      = 1.0
-            explanation = f"0 holiday days in forecast and history — no correction"
+            explanation = f"{forecast_days}d holiday vs avg {avg_hist:.1f}d — too few days to correct"
         elif avg_hist == 0:
             factor      = min(_CORRECTION_CAP, 1.5)
             explanation = (

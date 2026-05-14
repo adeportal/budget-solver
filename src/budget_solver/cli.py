@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from budget_solver.constants import TRAILING_WINDOW_DAYS, WEEKS_PER_MONTH, DATA_PATH
+from budget_solver.constants import TRAILING_WINDOW_DAYS, WEEKS_PER_MONTH, DAYS_PER_MONTH, DATA_PATH
 from budget_solver.data import (
     load_data,
     aggregate_weekly,
@@ -354,6 +354,11 @@ def main():
         print('Demand normalization applied: revenue ÷ demand index before curve fitting.')
         print()
 
+    # Resolve date column early — needed for CPC trends and calibration blocks below
+    date_col = next((c for c in ('date', 'week_start', 'week') if c in df.columns), None)
+    if date_col:
+        df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
+
     # ── CPC trend diagnostic (always computed) ───────────────
     # Compares trailing 30-day CPC to training-period CPC per account.
     # A rising CPC means the spend→clicks relationship is becoming less efficient —
@@ -468,11 +473,9 @@ def main():
     print()
 
     # ── Current spend + actual ROAS (trailing 30-day window = actual baseline) ──
-    date_col = next((c for c in ('date', 'week_start', 'week') if c in df.columns), None)
     actual_window_label = 'full input range'
     actual_window_detail = actual_window_label
     if date_col:
-        df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
         latest_date = df[date_col].max().normalize()
         cutoff = latest_date - pd.Timedelta(days=TRAILING_WINDOW_DAYS - 1)
         recent = df[(df[date_col] >= cutoff) & (df[date_col] <= latest_date)]
