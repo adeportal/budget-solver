@@ -50,6 +50,9 @@ def main():
                         help='Maximum spend per account, e.g. "Account A:20000"')
     parser.add_argument('--output',  default='',
                         help='Output Excel file path (default: budget_solver_YYYYMMDD.xlsx)')
+    parser.add_argument('--data',    default='',
+                        help='Path to input CSV (default: output/core_markets.csv). '
+                             'Useful for backtesting on a filtered dataset.')
     parser.add_argument('--no-outlier-removal', action='store_true',
                         help='Skip automatic outlier/anomaly removal before curve fitting')
     parser.add_argument('--normalize-demand', action='store_true',
@@ -114,12 +117,13 @@ def main():
     max_spend   = parse_kv_arg(args.max)
 
     # ── Load & validate ──────────────────────────────────────
-    if not DATA_PATH.exists():
-        print(f"No data found at {DATA_PATH}. Run 'budget-solver-pull' first.", file=sys.stderr)
+    data_path = Path(args.data) if args.data else DATA_PATH
+    if not data_path.exists():
+        print(f"No data found at {data_path}. Run 'budget-solver-pull' first.", file=sys.stderr)
         sys.exit(1)
 
-    print(f'Loading data from: {DATA_PATH}')
-    df = load_data(str(DATA_PATH))
+    print(f'Loading data from: {data_path}')
+    df = load_data(str(data_path))
 
     if args.target == 'conversions' and 'conversions' in df.columns:
         if 'conversions_adj' in df.columns:
@@ -514,8 +518,16 @@ def main():
     #          blend = _CAL_BLEND × confidence
     # When confidence → 0 the calibration scale collapses to 1.0 (no adjustment),
     # letting the fitted curve stand on its own rather than anchoring to bad data.
+    # Backtest (April 2026) showed three calibration issues that caused ~+36pp error:
+    # 1. _CAL_BLEND=0.25 was too weak — at 90% confidence the blend is only 22.5%,
+    #    leaving 77.5% of the prediction anchored to the raw curve's absolute level.
+    # 2. cal_roas used raw conversion_value (not lag-adjusted) from only 14 days;
+    #    lag-incomplete recent days systematically understate actual ROAS.
+    # 3. The 14-day window was too short to produce a stable ROAS estimate.
+    # Fix: raise blend to 0.75, use actual_roas (lag-adjusted 30d) for the ROAS anchor,
+    # keep the 14-day window only for the confidence/volatility signal.
     _CAL_WINDOW_DAYS = 14
-    _CAL_BLEND       = 0.25   # maximum blend weight (applied at full confidence)
+    _CAL_BLEND       = 0.75   # raised from 0.25 — backtest showed 0.25 left curves under-anchored
     _CAL_CAP_LO      = 0.7
     _CAL_CAP_HI      = 1.3
     _CAL_CV_MAX      = 1.0    # CV above this → confidence saturates to 0 contribution
@@ -526,14 +538,14 @@ def main():
         cal_cutoff = latest_date - pd.Timedelta(days=_CAL_WINDOW_DAYS - 1)
         cal_recent = df[(df[date_col] >= cal_cutoff) & (df[date_col] <= latest_date)]
         cal_spend  = cal_recent.groupby('account_name')['cost'].sum().to_dict()
-        cal_rev    = cal_recent.groupby('account_name')['conversion_value'].sum().to_dict()
-        cal_roas   = {
-            acc: cal_rev.get(acc, 0) / cal_spend[acc]
-            for acc in cal_spend if cal_spend[acc] > 0
-        }
 
         # Per-account confidence score from daily spend activity + ROAS volatility
-        for acc in cal_roas:
+        # (14-day window still used for confidence; ROAS anchor uses the lag-adjusted 30d figure)
+        for acc in cal_spend:
+            if cal_spend[acc] <= 0:
+                continue
+            cal_roas[acc] = actual_roas.get(acc, 0)   # lag-adjusted 30d — more stable than raw 14d
+
             acc_days = cal_recent[cal_recent['account_name'] == acc]
             daily_sp  = acc_days.groupby(date_col)['cost'].sum()
             active_days   = int((daily_sp > 0).sum())
