@@ -76,10 +76,10 @@ def main():
                         help='Per-account training window overrides, e.g. '
                              '"Landal BE:12,Landal DE:12". Overrides --training-months '
                              'for the specified accounts only.')
-    parser.add_argument('--half-life-weeks', type=float, default=8.0,
+    parser.add_argument('--half-life-weeks', type=float, default=16.0,
                         help='Exponential decay half-life (weeks) for recency weighting during '
-                             'curve fitting. Recent weeks receive higher weight. Default: 8. '
-                             'Use 0 or "inf" to disable weighting (uniform weights).')
+                             'curve fitting. Recent weeks receive higher weight. Default: 16. '
+                             'Use 0 to disable weighting (uniform weights).')
     parser.add_argument('--no-calibrate', action='store_true',
                         help='Skip calibrating response curves to the actual lag-adjusted '
                              'ROAS from the trailing 30-day window. By default curves are '
@@ -313,47 +313,13 @@ def main():
             print(f'    {acc:<30}  {acc_mult:.3f}')
     print()
 
-    # ── Holiday correction ────────────────────────────────────
-    # Correct for year-specific holiday density differences vs the historical average
-    # baked into the response curves. Applied to all accounts independently.
-    # Most impactful for Easter timing shifts and school holiday calendar variation.
-    from budget_solver.holiday_calendar import compute_holiday_corrections, forecast_week_to_ym
+    # Derive forecast year/month for Excel reporting (no seasonal corrections applied —
+    # backtesting showed holiday × weather stacking added ~30% error; calibration handles
+    # absolute level, curve shape handles relative spend efficiency).
+    from budget_solver.holiday_calendar import forecast_week_to_ym
     _forecast_year, _forecast_month = forecast_week_to_ym(forecast_week)
-    holiday_corrections = compute_holiday_corrections(
-        accounts=list(account_data.keys()),
-        forecast_year=_forecast_year,
-        forecast_month=_forecast_month,
-        lookback_years=[2024, 2025],
-    )
-    print(f'Holiday corrections ({_forecast_year}-{_forecast_month:02d}):')
-    for acc in sorted(holiday_corrections.keys()):
-        factor, explanation = holiday_corrections[acc]
-        flag = '  ▲' if factor > 1.05 else ('  ▼' if factor < 0.95 else '   ')
-        print(f'  {acc:<30}  {factor:.2f}×{flag}  {explanation}')
-    print()
-
-    # ── Weather correction ────────────────────────────────────
-    # Compares forecast-month sunshine hours (Open-Meteo) to historical average
-    # (ERA5 archive, same month 2023-2025). Outdoor leisure demand tracks sunshine
-    # strongly; a sunnier-than-average month justifies slightly more spend.
-    # Only activates within 30 days of the forecast month start; graceful fallback.
+    holiday_corrections: dict[str, tuple[float, str]] = {}
     weather_corrections: dict[str, tuple[float, str]] = {}
-    try:
-        from budget_solver.weather import compute_weather_multipliers
-        weather_corrections = compute_weather_multipliers(
-            accounts=list(account_data.keys()),
-            forecast_year=_forecast_year,
-            forecast_month=_forecast_month,
-        )
-        print(f'Weather corrections ({_forecast_year}-{_forecast_month:02d}):')
-        for acc in sorted(weather_corrections.keys()):
-            factor, explanation = weather_corrections[acc]
-            flag = '  ☀' if factor > 1.02 else ('  ☁' if factor < 0.98 else '   ')
-            print(f'  {acc:<30}  {factor:.2f}×{flag}  {explanation}')
-        print()
-    except Exception as exc:
-        print(f'Weather corrections: skipped ({exc.__class__.__name__})')
-        print()
 
     # Normalise revenue by demand index before curve fitting (optional)
     fitting_data = training_data
@@ -427,22 +393,13 @@ def main():
         cpc_str = f'  CPC {cpc_trends[acc]:+.1%}' if acc in cpc_trends else ''
         print(f'  {acc:<30}  model={mname:<15}  R²={r2:.3f}  n={n}{cpc_str}')
 
-    # Wrap predict_fns with:
-    #   1. demand normalization de-scaling (per-account if available, else portfolio)
-    #      — only when --normalize-demand is set
-    #   2. holiday correction (always) — adjusts for forecast month's holiday density
-    #      vs the historical average baked into the response curves
-    #   3. weather correction (always, graceful fallback to 1.0) — sunshine-hours
-    #      ratio for forecast month vs historical average
-    for acc in list(predict_fns.keys()):
-        fn = predict_fns[acc]
-        hc = holiday_corrections.get(acc, (1.0, ''))[0]
-        wc = weather_corrections.get(acc, (1.0, ''))[0]
-        if args.normalize_demand:
+    # When demand normalization is enabled, de-scale predictions by the forecast-week
+    # demand multiplier to project into the target period.
+    if args.normalize_demand:
+        for acc in list(predict_fns.keys()):
+            fn = predict_fns[acc]
             d = per_account_demand_index.get(acc, {}).get(forecast_week, forecast_demand)
-            predict_fns[acc] = lambda x, fn=fn, d=d, hc=hc, wc=wc: fn(x) * d * hc * wc
-        else:
-            predict_fns[acc] = lambda x, fn=fn, hc=hc, wc=wc: fn(x) * hc * wc
+            predict_fns[acc] = lambda x, fn=fn, d=d: fn(x) * d
 
     # ── Monthly scaling fix ───────────────────────────────────
     # Curves are fitted on WEEKLY aggregates, but current_alloc and budget are
@@ -756,14 +713,11 @@ def main():
     # ── Feedback loop: load history + apply bias corrections ─────────────────
     accuracy_df, bias_corrections = load_and_score_history(df, date_col=date_col)
     if bias_corrections:
-        print('Bias corrections (from historical prediction accuracy):')
+        print('Historical prediction bias (informational — not applied to forecasts):')
         for acc, factor in sorted(bias_corrections.items()):
-            direction = 'up' if factor > 1.0 else 'down'
-            print(f'  {acc:<30}  ×{factor:.3f}  (model was systematically {direction}-predicting)')
-            predict_fns[acc] = (lambda x, fn=predict_fns[acc], f=factor: fn(x) * f)
+            direction = 'over' if factor < 1.0 else 'under'
+            print(f'  {acc:<30}  ×{factor:.3f}  (model was {direction}-predicting)')
         print()
-    else:
-        accuracy_df = accuracy_df  # empty is fine
 
     # ══════════════════════════════════════════════════════════
     # Scenario Generation (A/B/C/D)

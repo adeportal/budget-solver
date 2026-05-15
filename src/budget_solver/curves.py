@@ -117,7 +117,7 @@ def _fit_log_robust(spend: np.ndarray, revenue: np.ndarray,
 
 
 def fit_two_stage_curves(account_data: dict, preferred_model: str = 'log',
-                         half_life_weeks: float = 8.0) -> dict:
+                         half_life_weeks: float = 16.0) -> dict:
     """
     Fit two-stage spend → clicks → revenue curves.
 
@@ -234,7 +234,7 @@ def fit_two_stage_curves(account_data: dict, preferred_model: str = 'log',
 
 
 def fit_portfolio_curves(account_data: dict, preferred_model: str = 'log',
-                         half_life_weeks: float = 8.0) -> dict:
+                         half_life_weeks: float = 16.0) -> dict:
     """
     Fit response curves for all accounts with consistent curve family enforcement.
 
@@ -302,7 +302,7 @@ def fit_portfolio_curves(account_data: dict, preferred_model: str = 'log',
 
 
 def fit_response_curve(spend_arr, revenue_arr, force_model: str | None = None,
-                       half_life_weeks: float = 8.0):
+                       half_life_weeks: float = 16.0):
     """
     Fit a log curve (primary) to weekly spend/revenue data.
     Falls back to power curve if the log fit fails or yields a negative slope,
