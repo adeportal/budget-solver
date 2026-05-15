@@ -21,6 +21,7 @@ Columns: account_name, domain, trailing_is, prior_is, is_delta,
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -30,6 +31,10 @@ OUTPUT_INSIGHTS_CSV = Path("output/auction_insights.csv")
 
 _SURGE_THRESHOLD = 0.10     # IS delta above this → competitive pressure flag
 _TOP_N           = 5        # competitors to retain per account per window
+
+
+class _MetricAccessDenied(Exception):
+    """Raised when the developer token lacks Standard Access for auction insight metrics."""
 
 
 def pull_auction_insights(
@@ -58,6 +63,14 @@ def pull_auction_insights(
     original_login_id = getattr(client, "login_customer_id", None)
     if login_customer_id:
         client.login_customer_id = login_customer_id
+
+    # Silence the Google Ads client's per-request fault logger for this call —
+    # it prints "Request made: ...IsFault: True, FaultMessage:..." for every failed
+    # request before our exception handler runs, making clean one-liner error
+    # messages impossible. We restore the level immediately after.
+    _gads_logger = logging.getLogger("google.ads.googleads.client")
+    _saved_level = _gads_logger.level
+    _gads_logger.setLevel(logging.CRITICAL)
 
     try:
         ga_service = client.get_service("GoogleAdsService")
@@ -99,13 +112,11 @@ def pull_auction_insights(
                     acc[domain]["outranking"].append(_safe(row.metrics.auction_insight_search_outranking_share))
             except Exception as exc:
                 msg = str(exc)
-                if "DEVELOPER_TOKEN" in msg or "developer token" in msg.lower():
-                    print(f"  NOTE: auction insights require Standard Access developer token — skipping")
-                elif "AUTHORIZATION_ERROR" in msg or "doesn't have access" in msg:
-                    print(f"  WARNING: auction insights — authorization error for {account_name} "
-                          f"(check login_customer_id matches direct parent MCC): {exc.__class__.__name__}")
-                else:
-                    print(f"  WARNING: auction insights unavailable for {account_name} — {exc.__class__.__name__}: {exc}")
+                # METRIC_ACCESS_DENIED = developer token is Basic, not Standard.
+                # Request Standard Access: Google Ads UI → Admin → API Center.
+                if "METRIC_ACCESS_DENIED" in msg or "DEVELOPER_TOKEN" in msg:
+                    raise _MetricAccessDenied()
+                raise
 
             results = {}
             for domain, vals in acc.items():
@@ -120,7 +131,7 @@ def pull_auction_insights(
         prior    = _query_window(prior_start,    prior_end)
 
     finally:
-        # Always restore original login_customer_id
+        _gads_logger.setLevel(_saved_level)
         if original_login_id is not None:
             client.login_customer_id = original_login_id
 
@@ -172,24 +183,36 @@ def pull_all_auction_insights(
     print(f"  Trailing window : {trailing_start} → {trailing_end}")
     print(f"  Prior window    : {prior_start} → {prior_end}")
 
+    _empty = pd.DataFrame(
+        columns=["account_name", "domain", "trailing_is", "prior_is",
+                 "is_delta", "overlap_rate", "outranking_share"]
+    )
+
     all_rows = []
     for acc_name, acc_id in account_map.items():
         mcc_id = account_mcc_map.get(acc_name) if account_mcc_map else None
         print(f"  Pulling auction insights: {acc_name} ...", end=" ", flush=True)
-        rows = pull_auction_insights(
-            client, acc_id, acc_name,
-            trailing_start, trailing_end,
-            prior_start, prior_end,
-            login_customer_id=mcc_id,
-        )
+        try:
+            rows = pull_auction_insights(
+                client, acc_id, acc_name,
+                trailing_start, trailing_end,
+                prior_start, prior_end,
+                login_customer_id=mcc_id,
+            )
+        except _MetricAccessDenied:
+            print()
+            print("  NOTE: auction insights require Standard Access on the developer token.")
+            print("        Request it: Google Ads UI → Admin → API Center → Request Standard Access.")
+            print("        Skipping competitive landscape data for this pull.")
+            return _empty
+        except Exception as exc:
+            print(f"skipped ({exc.__class__.__name__})")
+            continue
         all_rows.extend(rows)
         n_surge = sum(1 for r in rows if r["is_delta"] > _SURGE_THRESHOLD)
         print(f"{len(rows)} competitors{f'  ⚠ {n_surge} surging' if n_surge else ''}")
 
-    return pd.DataFrame(all_rows) if all_rows else pd.DataFrame(
-        columns=["account_name", "domain", "trailing_is", "prior_is",
-                 "is_delta", "overlap_rate", "outranking_share"]
-    )
+    return pd.DataFrame(all_rows) if all_rows else _empty
 
 
 def load_auction_insights(path: Path = OUTPUT_INSIGHTS_CSV) -> pd.DataFrame:
