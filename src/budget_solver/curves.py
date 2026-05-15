@@ -62,17 +62,23 @@ def make_safe_predictor(raw_predict_fn, min_observed_spend, anchor_revenue):
     return safe_predict
 
 
-def _fit_log_robust(spend: np.ndarray, revenue: np.ndarray):
+def _fit_log_robust(spend: np.ndarray, revenue: np.ndarray,
+                    weights: np.ndarray | None = None):
     """
-    Fit log curve revenue = a*ln(spend) + b using Huber loss minimisation.
+    Fit log curve revenue = a*ln(spend) + b using weighted Huber loss minimisation.
 
-    Huber loss is quadratic for small residuals and linear for large ones,
-    making the fit less sensitive to outlier weeks that survived outlier removal.
-    Delta is set adaptively from the MAD of OLS residuals.
+    weights: per-observation weights (e.g. exponential decay so recent weeks
+             matter more). If None, uniform weighting is used.
+    Delta is set adaptively from the MAD of unweighted OLS residuals (scale
+    parameter only — does not need to be weighted).
 
     Returns (params, r_squared) where params = [a, b].
+    R² is unweighted for comparability with previous runs.
     """
-    # OLS initial guess via curve_fit (fast, used only to seed Huber)
+    w = np.ones(len(spend)) if weights is None else np.asarray(weights, dtype=float)
+    w = w / w.mean()  # normalise so total weight = n, keeping objective scale stable
+
+    # OLS initial guess via curve_fit (fast, used only to seed Huber; unweighted is fine)
     try:
         with suppress_curve_fit_warnings():
             p0, _ = curve_fit(log_curve, spend, revenue,
@@ -80,18 +86,16 @@ def _fit_log_robust(spend: np.ndarray, revenue: np.ndarray):
         if p0[0] <= 0:
             raise ValueError("negative slope in OLS seed")
     except Exception:
-        # Fallback seed: slope = mean(revenue) / mean(log(spend))
         log_mean = float(np.log(np.maximum(spend.mean(), 1e-9)))
         p0 = np.array([revenue.mean() / max(log_mean, 1e-9), 0.0])
 
-    # Adaptive Huber delta: 1.35 × MAD of OLS residuals (minimum = 1% of revenue range)
     ols_resid = revenue - log_curve(spend, *p0)
     mad = float(np.median(np.abs(ols_resid - np.median(ols_resid))))
     delta = max(1.35 * mad, 0.01 * float(revenue.ptp() or revenue.mean()))
 
     def huber_obj(params):
         r = revenue - log_curve(spend, *params)
-        return float(np.sum(np.where(
+        return float(np.sum(w * np.where(
             np.abs(r) <= delta,
             0.5 * r ** 2,
             delta * (np.abs(r) - 0.5 * delta)
@@ -104,7 +108,7 @@ def _fit_log_robust(spend: np.ndarray, revenue: np.ndarray):
     )
     params = res.x if (res.success and res.x[0] > 0) else p0
 
-    # R² uses standard OLS formula (diagnostic, not part of fitting)
+    # R² unweighted — keeps diagnostic comparable across runs
     ss_res = float(np.sum((revenue - log_curve(spend, *params)) ** 2))
     ss_tot = float(np.sum((revenue - revenue.mean()) ** 2))
     r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
@@ -112,7 +116,8 @@ def _fit_log_robust(spend: np.ndarray, revenue: np.ndarray):
     return params, r2
 
 
-def fit_two_stage_curves(account_data: dict, preferred_model: str = 'log') -> dict:
+def fit_two_stage_curves(account_data: dict, preferred_model: str = 'log',
+                         half_life_weeks: float = 8.0) -> dict:
     """
     Fit two-stage spend → clicks → revenue curves.
 
@@ -152,7 +157,8 @@ def fit_two_stage_curves(account_data: dict, preferred_model: str = 'log') -> di
             failed_accounts.append(account)
             continue
 
-        fn, params, _, name = fit_response_curve(sp_c, cl_c, force_model=preferred_model)
+        fn, params, _, name = fit_response_curve(sp_c, cl_c, force_model=preferred_model,
+                                                  half_life_weeks=half_life_weeks)
         if name == 'linear_fallback':
             failed_accounts.append(account)
         clicks_results[account] = (fn, params, name, sp_c, cl_c)
@@ -169,7 +175,8 @@ def fit_two_stage_curves(account_data: dict, preferred_model: str = 'log') -> di
             if len(sp_c) < 3 or cl_c.sum() == 0:
                 clicks_results[account] = None
                 continue
-            fn, params, _, name = fit_response_curve(sp_c, cl_c, force_model='power')
+            fn, params, _, name = fit_response_curve(sp_c, cl_c, force_model='power',
+                                                      half_life_weeks=half_life_weeks)
             clicks_results[account] = (fn, params, name, sp_c, cl_c)
 
     # ── Stage 2: compute revenue_per_click + build combined predict_fn ──
@@ -182,7 +189,8 @@ def fit_two_stage_curves(account_data: dict, preferred_model: str = 'log') -> di
         cr = clicks_results.get(account)
         if cr is None:
             # Fall back to single-stage for this account
-            fn, params, r2, name = fit_response_curve(spend, revenue)
+            fn, params, r2, name = fit_response_curve(spend, revenue,
+                                                       half_life_weeks=half_life_weeks)
             results[account] = (fn, params, r2, name)
             continue
 
@@ -225,7 +233,8 @@ def fit_two_stage_curves(account_data: dict, preferred_model: str = 'log') -> di
     return results
 
 
-def fit_portfolio_curves(account_data: dict, preferred_model: str = 'log') -> dict:
+def fit_portfolio_curves(account_data: dict, preferred_model: str = 'log',
+                         half_life_weeks: float = 8.0) -> dict:
     """
     Fit response curves for all accounts with consistent curve family enforcement.
 
@@ -243,6 +252,7 @@ def fit_portfolio_curves(account_data: dict, preferred_model: str = 'log') -> di
     Args:
         account_data: Dict[account_name] → {'spend': array, 'revenue': array}
         preferred_model: 'log' or 'power' (default: 'log')
+        half_life_weeks: Exponential decay half-life for recency weighting (passed to fit_response_curve)
 
     Returns:
         Dict[account_name] → (predict_fn, params, r2, model_name)
@@ -255,7 +265,8 @@ def fit_portfolio_curves(account_data: dict, preferred_model: str = 'log') -> di
         fn, params, r2, model_name = fit_response_curve(
             data['spend'],
             data['revenue'],
-            force_model=preferred_model
+            force_model=preferred_model,
+            half_life_weeks=half_life_weeks,
         )
         results[account] = (fn, params, r2, model_name)
 
@@ -273,7 +284,8 @@ def fit_portfolio_curves(account_data: dict, preferred_model: str = 'log') -> di
             fn, params, r2, model_name = fit_response_curve(
                 data['spend'],
                 data['revenue'],
-                force_model='power'
+                force_model='power',
+                half_life_weeks=half_life_weeks,
             )
             results[account] = (fn, params, r2, model_name)
 
@@ -289,17 +301,20 @@ def fit_portfolio_curves(account_data: dict, preferred_model: str = 'log') -> di
     return results
 
 
-def fit_response_curve(spend_arr, revenue_arr, force_model: str | None = None):
+def fit_response_curve(spend_arr, revenue_arr, force_model: str | None = None,
+                       half_life_weeks: float = 8.0):
     """
     Fit a log curve (primary) to weekly spend/revenue data.
     Falls back to power curve if the log fit fails or yields a negative slope,
     and to a linear proxy if both fail or n < 3.
 
     Args:
-        spend_arr: Weekly spend observations
+        spend_arr: Weekly spend observations (chronologically sorted, oldest first)
         revenue_arr: Weekly revenue observations
         force_model: If specified, only attempt this model ('log' or 'power')
                     Used by fit_portfolio_curves for consistency enforcement
+        half_life_weeks: Exponential decay half-life for recency weighting.
+                        Recent weeks receive higher weight; set to np.inf to disable.
 
     Returns (predict_fn, params, r_squared, model_name)
     where predict_fn(x) → predicted revenue at spend x (weekly scale).
@@ -330,12 +345,22 @@ def fit_response_curve(spend_arr, revenue_arr, force_model: str | None = None):
         anchor_revenue = float(raw_fn(min_observed_spend)) if len(spend) else 0.0
         return make_safe_predictor(raw_fn, min_observed_spend, anchor_revenue), [avg_roas, 1.0], 0.0, 'linear_fallback'
 
+    # Exponential decay weights: index 0 = oldest, index n-1 = most recent → age 0
+    n = len(spend)
+    if np.isfinite(half_life_weeks) and half_life_weeks > 0:
+        decay = np.log(2) / half_life_weeks
+        ages  = np.arange(n - 1, -1, -1, dtype=float)  # 0 = most recent
+        weights = np.exp(-decay * ages)
+        weights = weights / weights.mean()  # normalise so sum = n
+    else:
+        weights = np.ones(n, dtype=float)
+
     chosen = None
 
     # ── Primary: log curve revenue = a * ln(spend) + b ───────
     if force_model is None or force_model == 'log':
         try:
-            params, r2 = _fit_log_robust(spend, revenue)
+            params, r2 = _fit_log_robust(spend, revenue, weights=weights)
             if params[0] > 0:  # positive slope required
                 chosen = {'r2': r2, 'model': log_curve, 'params': params, 'name': 'log'}
         except Exception:
@@ -345,9 +370,12 @@ def fit_response_curve(spend_arr, revenue_arr, force_model: str | None = None):
     if chosen is None and (force_model is None or force_model == 'power'):
         try:
             p0 = [revenue.mean() / max(spend.mean() ** 0.7, 1e-9), 0.7]
+            # sigma = 1/sqrt(w) → high-weight (recent) observations have smaller sigma
+            sigma = 1.0 / np.sqrt(weights)
             with suppress_curve_fit_warnings():
                 params, _ = curve_fit(power_curve, spend, revenue, p0=p0,
-                                      bounds=([0, POWER_B_MIN], [np.inf, POWER_B_MAX]), maxfev=10000)
+                                      bounds=([0, POWER_B_MIN], [np.inf, POWER_B_MAX]),
+                                      sigma=sigma, absolute_sigma=True, maxfev=10000)
             r2 = r_squared(revenue, power_curve(spend, *params))
             chosen = {'r2': r2, 'model': power_curve, 'params': params, 'name': 'power'}
         except Exception:

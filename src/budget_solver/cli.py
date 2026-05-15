@@ -76,6 +76,10 @@ def main():
                         help='Per-account training window overrides, e.g. '
                              '"Landal BE:12,Landal DE:12". Overrides --training-months '
                              'for the specified accounts only.')
+    parser.add_argument('--half-life-weeks', type=float, default=8.0,
+                        help='Exponential decay half-life (weeks) for recency weighting during '
+                             'curve fitting. Recent weeks receive higher weight. Default: 8. '
+                             'Use 0 or "inf" to disable weighting (uniform weights).')
     parser.add_argument('--no-calibrate', action='store_true',
                         help='Skip calibrating response curves to the actual lag-adjusted '
                              'ROAS from the trailing 30-day window. By default curves are '
@@ -395,13 +399,16 @@ def main():
         print()
 
     # ── Fit curves ───────────────────────────────────────────
+    hlw = float('inf') if args.half_life_weeks <= 0 else args.half_life_weeks
     if args.two_stage:
         from budget_solver.curves import fit_two_stage_curves
         print('Fitting two-stage response curves (spend → clicks → revenue):')
-        portfolio_results = fit_two_stage_curves(fitting_data, preferred_model='log')
+        portfolio_results = fit_two_stage_curves(fitting_data, preferred_model='log',
+                                                  half_life_weeks=hlw)
     else:
         print('Fitting response curves (portfolio-wide consistency):')
-        portfolio_results = fit_portfolio_curves(fitting_data, preferred_model='log')
+        portfolio_results = fit_portfolio_curves(fitting_data, preferred_model='log',
+                                                  half_life_weeks=hlw)
 
     predict_fns  = {}
     model_info   = {}
