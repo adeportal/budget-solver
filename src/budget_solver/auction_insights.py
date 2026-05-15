@@ -50,16 +50,19 @@ def pull_auction_insights(
     """
     Pull auction insight metrics for two date windows and return merged rows.
 
-    login_customer_id: the MCC that is the direct parent of this account.
-    Required for auction insight metrics — cross-manager access is not enough.
+    login_customer_id: the ROOT MCC that owns the Standard Access developer token.
+    Must be the top-level MCC (not a sub-MCC) — the API checks the developer
+    token of whichever account is specified as login_customer_id, and Standard
+    Access only applies if that account is where the approved token lives.
     The client's login_customer_id is temporarily overridden and restored.
 
     Each returned dict has:
       account_name, domain, trailing_is, prior_is, is_delta,
       overlap_rate, outranking_share
     """
-    # Auction insight metrics require the login_customer_id to be the direct
-    # parent MCC of the queried account. Override temporarily if provided.
+    # Use the root MCC (Standard Access token holder) as login_customer_id.
+    # The API checks the developer token access level of the login_customer_id,
+    # not the child account. Sub-MCCs don't own the token → METRIC_ACCESS_DENIED.
     original_login_id = getattr(client, "login_customer_id", None)
     if login_customer_id:
         client.login_customer_id = login_customer_id
@@ -162,16 +165,18 @@ def pull_all_auction_insights(
     client,
     account_map: dict[str, str],
     lookback_days: int = 30,
-    account_mcc_map: dict[str, str] | None = None,
+    root_mcc_id: str | None = None,
 ) -> pd.DataFrame:
     """
     Pull auction insights for all accounts and return a combined DataFrame.
 
-    account_map:     {account_name: account_id}
-    account_mcc_map: {account_name: mcc_id} — direct parent MCC for each account.
-                     Auction insight metrics require the login_customer_id to be
-                     the direct parent MCC, not a cross-manager MCC. Pass this so
-                     each account is queried through the right MCC hierarchy.
+    account_map: {account_name: account_id}
+    root_mcc_id: the top-level MCC that owns the Standard Access developer token.
+                 Auction insight metrics require login_customer_id to be the MCC
+                 whose developer token has Standard Access — which is the ROOT MCC,
+                 not the sub-MCCs that the child accounts sit directly under.
+                 e.g. hierarchy: root MCC → Landal MCC → Landal BE
+                 Standard Access token is on root MCC; pass root MCC ID here.
     """
     today = datetime.today()
 
@@ -190,14 +195,13 @@ def pull_all_auction_insights(
 
     all_rows = []
     for acc_name, acc_id in account_map.items():
-        mcc_id = account_mcc_map.get(acc_name) if account_mcc_map else None
         print(f"  Pulling auction insights: {acc_name} ...", end=" ", flush=True)
         try:
             rows = pull_auction_insights(
                 client, acc_id, acc_name,
                 trailing_start, trailing_end,
                 prior_start, prior_end,
-                login_customer_id=mcc_id,
+                login_customer_id=root_mcc_id,
             )
         except _MetricAccessDenied:
             print()

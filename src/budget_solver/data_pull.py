@@ -164,7 +164,12 @@ def apply_lag_correction(df: pd.DataFrame, pull_date: datetime) -> pd.DataFrame:
 # CONFIGURATION
 # ─────────────────────────────────────────────────────────────
 
-# Query child accounts from each of these MCCs
+# Root MCC that owns the developer token with Standard Access.
+# Auction insight metrics (and other restricted metrics) require login_customer_id
+# to be the account whose developer token has Standard Access — not a sub-MCC.
+ROOT_MCC_ID = "2322660480"   # RP - LDL MCC (232-266-0480)
+
+# Sub-MCCs to enumerate child accounts from
 CHILD_MCCS = {
     "8265762094": "Landal MCC",
     "6917028372": "Roompot MCC",
@@ -507,7 +512,7 @@ def main():
             OUTPUT_INSIGHTS_CSV,
         )
         insights_df = pull_all_auction_insights(
-            client, core_account_map, account_mcc_map=account_mcc_map
+            client, core_account_map, root_mcc_id=ROOT_MCC_ID
         )
         if not insights_df.empty:
             insights_df.to_csv(OUTPUT_INSIGHTS_CSV, index=False)
