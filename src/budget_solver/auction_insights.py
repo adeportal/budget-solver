@@ -67,10 +67,9 @@ def pull_auction_insights(
     if login_customer_id:
         client.login_customer_id = login_customer_id
 
-    # Silence the Google Ads client's per-request fault logger for this call —
-    # it prints "Request made: ...IsFault: True, FaultMessage:..." for every failed
-    # request before our exception handler runs, making clean one-liner error
-    # messages impossible. We restore the level immediately after.
+    # Suppress the Google Ads client's per-request fault logger for this call.
+    # auction_insight metrics require additional API allowlisting and always
+    # fail until that's granted; the fault lines just add noise to the output.
     _gads_logger = logging.getLogger("google.ads.googleads.client")
     _saved_level = _gads_logger.level
     _gads_logger.setLevel(logging.CRITICAL)
@@ -80,12 +79,9 @@ def pull_auction_insights(
 
         def _query_window(start: str, end: str) -> dict[str, dict]:
             """Return {domain: {is, overlap, outranking}} for one window."""
-            # Auction insight metrics live on the `campaign` resource, segmented by
-            # segments.auction_insight_domain.  Do NOT filter on the auction insight
-            # metric in the WHERE clause — GAQL does not support WHERE filtering on
-            # segmented auction insight metrics and it causes access errors.
             query = f"""
                 SELECT
+                    campaign.id,
                     segments.auction_insight_domain,
                     metrics.auction_insight_search_impression_share,
                     metrics.auction_insight_search_overlap_rate,
